@@ -87,7 +87,10 @@ void BufferableBag::load_tf_static(const std::string& bag_path) {
   tf_reader.open(bag_path);
   tf_reader.set_filter(rosbag2_storage::StorageFilter{.topics = {"/tf_static"}});
   while (tf_reader.has_next()) {
-    apply_tf_message(tf_reader.read_next());
+    const auto msg = tf_reader.read_next();
+    if (msg->topic_name == "/tf_static") {
+      apply_tf_message(msg);
+    }
   }
   tf_reader.close();
 }

@@ -431,6 +431,28 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
                      ") does not match scan (" + std::to_string(scan.size()) + ").");
   }
   const Nsec current_lidar_time = timestamps.max;
+  if (lidar_state.time >= EPSILON_TIME && current_lidar_time <= lidar_state.time) {
+    spdlog::warn("Dropping a LiDAR scan that does not end after the previous one.");
+    return {};
+  }
+  const auto is_partial_scan_fragment = [&] {
+    constexpr Scalar SCAN_FRAGMENT_FRACTION = 0.25;
+    constexpr Scalar LOWPASS_TIME_CONSTANT = 10;
+    const auto scan_duration = to_seconds<Scalar>(timestamps.max - timestamps.min);
+    const auto scan_point_count = static_cast<Scalar>(scan.size());
+    if (scan_duration < SCAN_FRAGMENT_FRACTION * lowpass_scan_duration_ &&
+        scan_point_count < SCAN_FRAGMENT_FRACTION * lowpass_scan_point_count_) {
+      return true;
+    }
+    const Scalar alpha = lowpass_scan_point_count_ > 0 ? 1 / LOWPASS_TIME_CONSTANT : 1;
+    lowpass_scan_duration_ += alpha * (scan_duration - lowpass_scan_duration_);
+    lowpass_scan_point_count_ += alpha * (scan_point_count - lowpass_scan_point_count_);
+    return false;
+  };
+  if (is_partial_scan_fragment()) {
+    spdlog::warn("Dropping a LiDAR scan fragment of {} points.", scan.size());
+    return {};
+  }
 
   if (lidar_state.time < EPSILON_TIME) {
     return bootstrap_first_scan(scan, current_lidar_time);

@@ -439,3 +439,19 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   REQUIRE(approx_equal(lio.poses_with_timestamps.back().second, Sophus::SE3s{}, EXACT_TOL));
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
 }
+
+TEST_CASE("A scan that does not end after the previous one, or a fragment of a scan, is dropped", "[register_scan]") {
+  LIO lio((LIO::Config{}));
+  const auto cloud = make_hollow_cube();
+  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+
+  REQUIRE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END)).empty());
+
+  const Vector3sVector fragment(cloud.begin(), cloud.begin() + static_cast<std::ptrdiff_t>(cloud.size() / 20));
+  REQUIRE(lio.register_scan(fragment, linspace_timestamps(fragment.size(), FIRST_SCAN_END, FIRST_SCAN_END + 0.002))
+              .empty());
+  REQUIRE(lio.poses_with_timestamps.size() == 1);
+
+  REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), FIRST_SCAN_END, SECOND_SCAN_END)).empty());
+  REQUIRE(lio.poses_with_timestamps.size() == 2);
+}
