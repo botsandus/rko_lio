@@ -455,3 +455,44 @@ TEST_CASE("A scan that does not end after the previous one, or a fragment of a s
   REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), FIRST_SCAN_END, SECOND_SCAN_END)).empty());
   REQUIRE(lio.poses_with_timestamps.size() == 2);
 }
+
+TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_scan]") {
+  LIO::Config config;
+  config.flat = true;
+  LIO lio(config);
+  const auto cloud = make_hollow_cube();
+  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+
+  const double yaw = 3.0 * M_PI / 180.0;
+  const Eigen::Vector3s t(0.5, 0.3, 0.2);
+  const Eigen::Vector3s imu_accel = 2.0 * t / (DT * DT) + Eigen::Vector3s{0.0, 0.0, GRAVITY_MAG};
+  feed_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10, imu_accel, Eigen::Vector3s(0.01, 0.02, yaw / DT));
+
+  const Sophus::SE3s T_inv = Sophus::SE3s(Sophus::SO3s::rotZ(yaw), t).inverse();
+  Vector3sVector cloud2;
+  cloud2.reserve(cloud.size());
+  for (const auto& p : cloud) {
+    cloud2.emplace_back(T_inv * p);
+  }
+  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+
+  REQUIRE(
+      approx_equal(lio.lidar_state.pose, Sophus::SE3s(Sophus::SO3s::rotZ(yaw), Eigen::Vector3s(0.5, 0.3, 0.0)), 1e-2));
+}
+
+TEST_CASE("flat: the tilt from initialization_phase compensates gravity and stays out of the pose", "[register_scan]") {
+  LIO::Config config;
+  config.flat = true;
+  config.initialization_phase = true;
+  LIO lio(config);
+  const auto cloud = make_hollow_cube();
+  const Eigen::Vector3s tilted_gravity = Sophus::SO3s::rotX(0.1) * Eigen::Vector3s(0.0, 0.0, GRAVITY_MAG);
+
+  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  feed_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10, tilted_gravity, Eigen::Vector3s::Zero());
+  lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
+  feed_imu(lio, SECOND_SCAN_END + 0.05, SECOND_SCAN_END + DT - 0.05, 10, tilted_gravity, Eigen::Vector3s::Zero());
+
+  REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
+  REQUIRE(lio.interval_stats.body_acceleration_sum.norm() < EXACT_TOL);
+}

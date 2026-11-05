@@ -32,6 +32,7 @@ convergence_criterion: 0.00001
 max_num_threads: 1
 initialization_phase: false
 double_downsample: true
+flat: false
 # Lidar per-point timestamp processing - set when the heuristic fails.
 # lidar_timestamps.multiplier_to_seconds: 0.0   # 0.0 = autodetect; e.g. 1e-6 for microseconds
 # lidar_timestamps.force_absolute: false

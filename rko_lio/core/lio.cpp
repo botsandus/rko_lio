@@ -38,6 +38,7 @@
 #include <tbb/task_arena.h>
 // stl
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <numeric>
 #include <sstream>
@@ -135,7 +136,13 @@ Sophus::SE3s icp(const Vector3sVector& keypoints,
     const auto& [H, b, chi] =
         build_icp_linear_system(current_pose, keypoints, voxel_map, config.max_correspondence_distance);
 
-    const Eigen::Vector6s dx = H.ldlt().solve(-b);
+    Eigen::Vector6s dx = Eigen::Vector6s::Zero();
+    if (config.flat) {
+      constexpr std::array<int, 3> x_y_yaw{0, 1, 5};
+      dx(x_y_yaw) = H(x_y_yaw, x_y_yaw).ldlt().solve(-b(x_y_yaw)).eval();
+    } else {
+      dx = H.ldlt().solve(-b);
+    }
     current_pose = current_pose * Sophus::SE3s::exp(dx);
 
     // Ceres function_tolerance style convergence check
@@ -188,7 +195,9 @@ void LIO::initialize(const Nsec lidar_time) {
   const Eigen::Vector3s avg_gyro = interval_stats.angular_velocity_sum / interval_stats.imu_count;
 
   const Sophus::SO3s initial_rotation = align_accel_to_z_world(avg_accel);
-  lidar_state.pose.so3() = initial_rotation;
+  if (!config.flat) {
+    lidar_state.pose.so3() = initial_rotation;
+  }
   imu_state = lidar_state;
 
   // lidar_state.time has the time from the previous lidar, which we didn't log if init_phase was on
@@ -276,11 +285,15 @@ void LIO::add_imu_measurement(const ImuControl& base_imu) {
     return;
   }
 
-  const Eigen::Vector3s unbiased_ang_vel = base_imu.angular_velocity - imu_bias.gyroscope;
+  Eigen::Vector3s unbiased_ang_vel = base_imu.angular_velocity - imu_bias.gyroscope;
   const Eigen::Vector3s unbiased_accel = base_imu.acceleration - imu_bias.accelerometer;
 
   const Eigen::Vector3s local_gravity = imu_state.pose.so3().inverse() * gravity();
-  const Eigen::Vector3s compensated_accel = unbiased_accel + local_gravity;
+  Eigen::Vector3s compensated_accel = unbiased_accel + local_gravity;
+  if (config.flat) {
+    unbiased_ang_vel.head<2>().setZero();
+    compensated_accel.z() = 0;
+  }
 
   // imu state update
   Eigen::Vector6s tau;

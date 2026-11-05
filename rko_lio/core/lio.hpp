@@ -72,6 +72,9 @@ public:
 
     /** Enable double downsampling. */
     bool double_downsample = true;
+
+    /** Restrict the pose to x, y and yaw. */
+    bool flat = false;
   };
 
   /** Configuration parameters. */

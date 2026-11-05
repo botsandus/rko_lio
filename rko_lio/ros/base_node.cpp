@@ -50,7 +50,8 @@ std::string config_to_yaml(const rko_lio::core::LIO::Config& config) {
      << "max_correspondence_distance: " << config.max_correspondence_distance << "\n"
      << "max_num_threads: " << config.max_num_threads << "\n"
      << "initialization_phase: " << config.initialization_phase << "\n"
-     << "double_downsample: " << config.double_downsample << "\n";
+     << "double_downsample: " << config.double_downsample << "\n"
+     << "flat: " << config.flat << "\n";
   return ss.str();
 }
 } // namespace
@@ -140,6 +141,7 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   lio_config.initialization_phase =
       node->declare_parameter<bool>("initialization_phase", lio_config.initialization_phase);
   lio_config.double_downsample = node->declare_parameter<bool>("double_downsample", lio_config.double_downsample);
+  lio_config.flat = node->declare_parameter<bool>("flat", lio_config.flat);
   lio = std::make_unique<core::LIO>(lio_config);
 
   // Lidar per-point timestamp processing params, namespaced under lidar_timestamps.*

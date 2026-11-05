@@ -211,6 +211,12 @@ configurable_parameters = [
         "type": "bool",
         "description": "Double downsample the input cloud before registration. Useful for dense Lidars. Can be disabled for sparse lidars.",
     },
+    {
+        "name": "flat",
+        "default": "false",
+        "type": "bool",
+        "description": "Restrict the pose to x, y and yaw: z, roll and pitch stay at their initial values. The base frame must be parallel to the floor.",
+    },
     # lidar per-point timestamp processing parameters
     {
         "name": "lidar_timestamps.multiplier_to_seconds",
