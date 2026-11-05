@@ -50,9 +50,7 @@ std::string config_to_yaml(const rko_lio::core::LIO::Config& config) {
      << "max_correspondence_distance: " << config.max_correspondence_distance << "\n"
      << "max_num_threads: " << config.max_num_threads << "\n"
      << "initialization_phase: " << config.initialization_phase << "\n"
-     << "max_expected_jerk: " << config.max_expected_jerk << "\n"
-     << "double_downsample: " << config.double_downsample << "\n"
-     << "min_beta: " << config.min_beta << "\n";
+     << "double_downsample: " << config.double_downsample << "\n";
   return ss.str();
 }
 } // namespace
@@ -141,10 +139,7 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   lio_config.max_num_threads = static_cast<int>(node->declare_parameter<int>("max_num_threads", 1));
   lio_config.initialization_phase =
       node->declare_parameter<bool>("initialization_phase", lio_config.initialization_phase);
-  lio_config.max_expected_jerk =
-      static_cast<core::Scalar>(node->declare_parameter<double>("max_expected_jerk", lio_config.max_expected_jerk));
   lio_config.double_downsample = node->declare_parameter<bool>("double_downsample", lio_config.double_downsample);
-  lio_config.min_beta = static_cast<core::Scalar>(node->declare_parameter<double>("min_beta", lio_config.min_beta));
   lio = std::make_unique<core::LIO>(lio_config);
 
   // Lidar per-point timestamp processing params, namespaced under lidar_timestamps.*

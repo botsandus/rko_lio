@@ -70,14 +70,8 @@ public:
     /** Enable initialization phase. */
     bool initialization_phase = false;
 
-    /** Maximum expected jerk (m/s³). */
-    Scalar max_expected_jerk = 3;
-
     /** Enable double downsampling. */
     bool double_downsample = true;
-
-    /** Minimum weight for orientation regularization. */
-    Scalar min_beta = 200;
   };
 
   /** Configuration parameters. */
@@ -94,12 +88,6 @@ public:
 
   /** IMU bias estimates when initialization is enabled. */
   ImuBias imu_bias;
-
-  /** Mean body acceleration estimate. */
-  Eigen::Vector3s mean_body_acceleration = Eigen::Vector3s::Zero();
-
-  /** Covariance of body acceleration estimate. */
-  Eigen::Matrix3s body_acceleration_covariance = Eigen::Matrix3s::Identity();
 
   /** IMU measurement statistics since last LiDAR frame. */
   IntervalStats interval_stats;

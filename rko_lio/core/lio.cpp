@@ -40,7 +40,6 @@
 #include <algorithm>
 #include <functional>
 #include <numeric>
-#include <optional>
 #include <sstream>
 
 namespace {
@@ -59,58 +58,6 @@ inline std::string streamed(const T& value) {
 
 inline void transform_points(const Sophus::SE3s& T, Vector3sVector& points) {
   std::transform(points.begin(), points.end(), points.begin(), [&](const auto& point) { return T * point; });
-}
-
-struct AccelInfo {
-  Scalar accel_mag_variance;
-  Eigen::Vector3s local_gravity_estimate;
-};
-
-struct BodyAccelKF {
-  Eigen::Vector3s mean;
-  Eigen::Matrix3s covariance;
-};
-
-struct AccelFilterStep {
-  std::optional<AccelInfo> info;
-  BodyAccelKF updated{};
-};
-
-AccelFilterStep step_body_accel_filter(const BodyAccelKF& prev,
-                                       const IntervalStats& stats,
-                                       const Sophus::SO3s& rotation_estimate,
-                                       const Nsec dt,
-                                       const Scalar max_expected_jerk) {
-  if (stats.imu_count <= 1) {
-    spdlog::warn("{} IMU message(s) in interval between two lidar scans. Cannot compute acceleration statistics "
-                 "for orientation regularisation. Please check your data and its timestamping as likely there "
-                 "should not be so few IMU measurements between two LiDAR scans.",
-                 stats.imu_count);
-    return {.info = std::nullopt, .updated = prev};
-  }
-
-  const Eigen::Vector3s avg_imu_accel = stats.imu_acceleration_sum / stats.imu_count;
-  const Scalar accel_mag_variance = stats.welford_sum_of_squares / static_cast<Scalar>(stats.imu_count - 1);
-  const Eigen::Vector3s body_accel_measurement = avg_imu_accel + rotation_estimate.inverse() * gravity();
-
-  const auto max_acceleration_change = static_cast<Scalar>(max_expected_jerk * to_seconds(dt));
-  // assume [j, -j] range for uniform dist. on jerk. variance is (2j)^2 / 12 = j^2/3. multiply by dt^2 for accel
-  const Eigen::Matrix3s process_noise = square(max_acceleration_change) / 3 * Eigen::Matrix3s::Identity();
-  const Eigen::Matrix3s cov_pred = prev.covariance + process_noise;
-
-  // isotropic accel mag variance
-  const Eigen::Matrix3s measurement_noise = accel_mag_variance / 3 * Eigen::Matrix3s::Identity();
-  const Eigen::Matrix3s S = cov_pred + measurement_noise;
-  const Eigen::Matrix3s kalman_gain = cov_pred * S.inverse();
-
-  const Eigen::Vector3s new_mean = prev.mean + kalman_gain * (body_accel_measurement - prev.mean);
-  const Eigen::Matrix3s new_cov = cov_pred - kalman_gain * cov_pred;
-
-  const Eigen::Vector3s local_gravity_estimate = avg_imu_accel - new_mean; // points upwards
-  return {
-      .info = AccelInfo{.accel_mag_variance = accel_mag_variance, .local_gravity_estimate = local_gravity_estimate},
-      .updated = BodyAccelKF{.mean = new_mean, .covariance = new_cov},
-  };
 }
 
 using LinearSystem = std::tuple<Eigen::Matrix6s, Eigen::Vector6s, Scalar>;
@@ -177,45 +124,16 @@ LinearSystem build_icp_linear_system(const Sophus::SE3s& current_pose,
   return {H_icp / correspondences_counter, b_icp / correspondences_counter, 0.5 * chi_icp / correspondences_counter};
 }
 
-LinearSystem build_orientation_linear_system(const Sophus::SE3s& current_pose,
-                                             const Eigen::Vector3s& local_gravity_estimate) {
-  const Sophus::SO3s& current_rotation = current_pose.so3();
-  const Eigen::Vector3s predicted_gravity =
-      current_rotation.inverse() * (-1 * gravity()); // points upwards, same as local_gravity_estimate
-  const Eigen::Vector3s residual = predicted_gravity - local_gravity_estimate;
-
-  Eigen::Matrix3_6s J_ori = Eigen::Matrix3_6s::Zero();
-  J_ori.block<3, 3>(0, 3) = Sophus::SO3s::hat(predicted_gravity);
-
-  return LinearSystem{J_ori.transpose() * J_ori, J_ori.transpose() * residual, 0.5 * residual.squaredNorm()};
-}
-
 Sophus::SE3s icp(const Vector3sVector& keypoints,
                  const VoxelHashMap& voxel_map,
                  const Sophus::SE3s& initial_guess,
-                 const LIO::Config& config,
-                 const std::optional<AccelInfo>& optional_accel_info) {
-  // in case config disables it, or we don't have valid IMU information for this icp loop, beta is -1
-  const Scalar beta = (config.min_beta > 0 && optional_accel_info.has_value())
-                          ? (config.min_beta * (1 + optional_accel_info->accel_mag_variance))
-                          : -1;
-
+                 const LIO::Config& config) {
   Sophus::SE3s current_pose = initial_guess;
   Scalar previous_chi = -1;
 
   for (size_t i = 0; i < config.max_iterations; ++i) {
-    const auto& [H, b, chi] = std::invoke([&]() -> LinearSystem {
-      const auto& [H_icp, b_icp, chi_icp] =
-          build_icp_linear_system(current_pose, keypoints, voxel_map, config.max_correspondence_distance);
-      if (beta >= 0) {
-        const auto& [H_ori, b_ori, chi_ori] =
-            build_orientation_linear_system(current_pose, optional_accel_info->local_gravity_estimate);
-        // only chi_icp is used for convergence checks. chi_ori is typically small, fine to ignore, and problematically
-        // noisy near convergence
-        return {H_icp + H_ori / beta, b_icp + b_ori / beta, chi_icp};
-      }
-      return {H_icp, b_icp, chi_icp};
-    });
+    const auto& [H, b, chi] =
+        build_icp_linear_system(current_pose, keypoints, voxel_map, config.max_correspondence_distance);
 
     const Eigen::Vector6s dx = H.ldlt().solve(-b);
     current_pose = current_pose * Sophus::SE3s::exp(dx);
@@ -468,13 +386,6 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
 
   const Sophus::SE3s initial_guess = lidar_state.pose * relative_pose_at_time(motion, current_lidar_time);
 
-  // body acceleration filter
-  const auto kf_step = step_body_accel_filter(
-      {.mean = mean_body_acceleration, .covariance = body_acceleration_covariance}, interval_stats, initial_guess.so3(),
-      current_lidar_time - lidar_state.time, config.max_expected_jerk);
-  mean_body_acceleration = kf_step.updated.mean;
-  body_acceleration_covariance = kf_step.updated.covariance;
-
   if (config.deskew) {
     SCOPED_PROFILER("Deskew");
     const auto gap_to_scan_start = to_seconds<Scalar>(timestamps.min - motion.start_time);
@@ -502,7 +413,7 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
   if (!map.empty()) {
     SCOPED_PROFILER("ICP");
     const Sophus::SE3s optimized_pose =
-        arena.execute([&] { return icp(preproc_result.keypoints, map, initial_guess, config, kf_step.info); });
+        arena.execute([&] { return icp(preproc_result.keypoints, map, initial_guess, config); });
 
     // estimate velocities and accelerations from the new pose
     const auto dt = to_seconds<Scalar>(current_lidar_time - lidar_state.time);
@@ -546,8 +457,6 @@ void LIO::restart() {
   lidar_state = {};
   imu_state = {};
   imu_bias = {};
-  mean_body_acceleration.setZero();
-  body_acceleration_covariance = Eigen::Matrix3s::Identity();
   interval_stats.reset();
   initialized_ = false;
 }

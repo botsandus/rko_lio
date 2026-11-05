@@ -206,22 +206,10 @@ configurable_parameters = [
         "description": "Max ICP iterations",
     },
     {
-        "name": "max_expected_jerk",
-        "default": "3.0",
-        "type": "float",
-        "description": "Max expected jerk (m/s^3)",
-    },
-    {
         "name": "double_downsample",
         "default": "true",
         "type": "bool",
         "description": "Double downsample the input cloud before registration. Useful for dense Lidars. Can be disabled for sparse lidars.",
-    },
-    {
-        "name": "min_beta",
-        "default": "200",
-        "type": "float",
-        "description": "Scale parameter that decides the minimum amount of orientation regularisation applied during ICP registration.",
     },
     # lidar per-point timestamp processing parameters
     {
