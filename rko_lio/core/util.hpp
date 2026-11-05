@@ -114,12 +114,6 @@ struct IntervalStats {
   /** Sum of unbiased raw IMU accelerations. */
   Eigen::Vector3s imu_acceleration_sum = Eigen::Vector3s::Zero();
 
-  /** Mean magnitude of raw IMU acceleration over the interval. */
-  Scalar imu_accel_mag_mean = 0;
-
-  /** Variance accumulator for acceleration magnitude using Welford’s method. */
-  Scalar welford_sum_of_squares = 0;
-
   /**
    * Update accumulated statistics with a new IMU measurement.
    * @param unbiased_ang_vel Unbiased angular velocity.
@@ -133,12 +127,6 @@ struct IntervalStats {
     angular_velocity_sum += unbiased_ang_vel;
     imu_acceleration_sum += uncompensated_unbiased_accel;
 
-    const Scalar previous_mean = imu_accel_mag_mean;
-    const Scalar accel_norm = uncompensated_unbiased_accel.norm();
-
-    imu_accel_mag_mean += (accel_norm - previous_mean) / static_cast<Scalar>(imu_count);
-    welford_sum_of_squares += (accel_norm - previous_mean) * (accel_norm - imu_accel_mag_mean);
-
     body_acceleration_sum += compensated_accel;
   }
 
@@ -148,8 +136,6 @@ struct IntervalStats {
     angular_velocity_sum.setZero();
     body_acceleration_sum.setZero();
     imu_acceleration_sum.setZero();
-    imu_accel_mag_mean = 0;
-    welford_sum_of_squares = 0;
   }
 };
 
