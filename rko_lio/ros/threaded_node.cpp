@@ -24,8 +24,8 @@
 
 #include "threaded_node.hpp"
 #include "rko_lio/core/error.hpp"
-#include "rko_lio/core/profiler.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
+#include <UTL/profiler.hpp>
 
 namespace {
 using namespace std::literals;
@@ -82,7 +82,7 @@ void ThreadedNode::registration_loop() {
   while (rclcpp::ok() && atomic_node_running) {
     std::unique_lock buffer_lock(buffer_mutex);
     sync_condition_variable.wait(buffer_lock, [this] { return !atomic_node_running || atomic_can_process; });
-    SCOPED_PROFILER("ROS Registration Loop");
+    UTL_PROFILER_SCOPE("rko_lio: ROS registration loop");
     if (!atomic_node_running) {
       // node could have been killed after waiting on the cv
       break;

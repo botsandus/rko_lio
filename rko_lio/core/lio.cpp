@@ -22,13 +22,13 @@
  * SOFTWARE.
  */
 
+#include <UTL/profiler.hpp>
 #include <spdlog/spdlog.h>
 
 #include "deskew.hpp"
 #include "error.hpp"
 #include "lio.hpp"
 #include "preprocess_scan.hpp"
-#include "profiler.hpp"
 #include "util.hpp"
 // other
 #include <sophus/se3.hpp>
@@ -400,7 +400,7 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
   const Sophus::SE3s initial_guess = lidar_state.pose * relative_pose_at_time(motion, current_lidar_time);
 
   if (config.deskew) {
-    SCOPED_PROFILER("Deskew");
+    UTL_PROFILER_SCOPE("rko_lio: deskew");
     const auto gap_to_scan_start = to_seconds<Scalar>(timestamps.min - motion.start_time);
     const MotionPrior scan_motion{
         .start_time = timestamps.min,
@@ -424,7 +424,7 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
   const Vector3sVector& map_input = config.double_downsample ? preproc_result.map_points : preproc_result.keypoints;
 
   if (!map.empty()) {
-    SCOPED_PROFILER("ICP");
+    UTL_PROFILER_SCOPE("rko_lio: ICP");
     const Sophus::SE3s optimized_pose =
         arena.execute([&] { return icp(preproc_result.keypoints, map, initial_guess, config); });
 

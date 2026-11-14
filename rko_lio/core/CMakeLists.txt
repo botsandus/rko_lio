@@ -71,8 +71,14 @@ target_link_libraries(
          tsl::robin_map
          Sophus::Sophus
          Eigen3::Eigen
-         spdlog::spdlog)
+         spdlog::spdlog
+  # header only: needed only to compile rko_lio
+  PRIVATE $<BUILD_INTERFACE:UTL::include>)
 
 target_compile_features(rko_lio.core PUBLIC cxx_std_20)
+# tells a consumer the profiler zones are compiled in, so its own profiled build can require it
+if(RKO_LIO_ENABLE_PROFILING)
+  target_compile_definitions(rko_lio.core INTERFACE RKO_LIO_PROFILING)
+endif()
 
 set_target_properties(rko_lio.core PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME core)

@@ -25,9 +25,11 @@ endif()
 option(RKO_LIO_BUILD_ROS "Build the ROS wrapper for RKO LIO" ON)
 option(RKO_LIO_BUILD_TESTS "Build core C++ tests" OFF)
 option(RKO_LIO_FETCH_CONTENT_DEPS "Fetch dependencies via FetchContent instead of using find_package" OFF)
+option(RKO_LIO_ENABLE_PROFILING "Fetch UTL and link it in, for the scoped profiler" OFF)
 
 include(cmake/dependencies.cmake)
 include(cmake/compat_target_sources.cmake)
+include(cmake/utl.cmake)
 
 find_package(Eigen3 3.4 REQUIRED CONFIG)
 find_package(Sophus REQUIRED CONFIG)

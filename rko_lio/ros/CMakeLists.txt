@@ -47,7 +47,8 @@ target_link_libraries(
          # ros deps end
          rko_lio::core
          Sophus::Sophus
-         Eigen3::Eigen)
+         Eigen3::Eigen
+  PRIVATE $<BUILD_INTERFACE:UTL::include>)
 
 set_target_properties(rko_lio.ros PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME ros)
 
