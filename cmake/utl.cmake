@@ -8,8 +8,13 @@ if(RKO_LIO_ENABLE_PROFILING)
   FetchContent_MakeAvailable(utl)
 else()
   # the header UTL would have given us, with the profiler compiled out
-  file(WRITE ${CMAKE_BINARY_DIR}/utl_disabled/UTL/profiler.hpp
-       "#pragma once\n#define UTL_PROFILER_DISABLE\n#define UTL_PROFILER_SCOPE(label)\n")
+  file(
+    CONFIGURE
+    OUTPUT
+    ${CMAKE_BINARY_DIR}/utl_disabled/UTL/profiler.hpp
+    CONTENT
+    "#pragma once\n#define UTL_PROFILER_DISABLE\n#define UTL_PROFILER_SCOPE(label)\n"
+    @ONLY)
   add_library(UTL::include INTERFACE IMPORTED)
   target_include_directories(UTL::include INTERFACE ${CMAKE_BINARY_DIR}/utl_disabled)
 endif()
