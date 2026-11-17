@@ -13,6 +13,10 @@
 odom_topic: /rko_lio/odom
 odom_frame: odom
 invert_odom_tf: false
+publish_odom_and_tf: true  # false: no odometry, tf or reset count is published
+publish_metrics: false  # each scan's statistics on rko_lio/scan_metrics (Float64MultiArray, fields in its layout label)
+# metrics_dir: <empty: off; a directory: each scan's pose (TUM) and statistics (CSV) appended there>
+# write_interval_s: 60  # how often the metrics files are written
 # reset_on_registration_error: false
 publish_local_map: true
 map_topic: /rko_lio/local_map

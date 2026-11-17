@@ -88,14 +88,17 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
 #else
   tf_listener = std::make_shared<tf2_ros::TransformListener>(*tf_buffer, node);
 #endif
-  tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*node);
 
   // publishing
   const rclcpp::QoS publisher_qos(rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile());
-  odom_publisher = node->create_publisher<nav_msgs::msg::Odometry>(odom_topic, publisher_qos);
-  reset_count_publisher = node->create_publisher<std_msgs::msg::UInt32>(
-      "rko_lio/reset_count", rclcpp::SystemDefaultsQoS().keep_last(1).transient_local());
-  reset_count_publisher->publish(std_msgs::msg::UInt32());
+  publish_odom_and_tf = node->declare_parameter<bool>("publish_odom_and_tf", publish_odom_and_tf);
+  if (publish_odom_and_tf) {
+    tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*node);
+    odom_publisher = node->create_publisher<nav_msgs::msg::Odometry>(odom_topic, publisher_qos);
+    reset_count_publisher = node->create_publisher<std_msgs::msg::UInt32>(
+        "rko_lio/reset_count", rclcpp::SystemDefaultsQoS().keep_last(1).transient_local());
+    reset_count_publisher->publish(std_msgs::msg::UInt32());
+  }
 
   publish_lidar_acceleration = node->declare_parameter<bool>("publish_lidar_acceleration", publish_lidar_acceleration);
   if (publish_lidar_acceleration) {
@@ -159,9 +162,10 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
                      "Subscribed to IMU: "
                          << imu_topic << (!imu_frame.empty() ? " (frame " + imu_frame + ")" : "") << " and LiDAR: "
                          << lidar_topic << (!lidar_frame.empty() ? " (frame " + lidar_frame + ")" : "")
-                         << ". Max number of threads: " << lio_config.max_num_threads << ". Publishing odometry to "
-                         << odom_topic << " ( " << odom_frame
-                         << " ) and acceleration "
+                         << ". Max number of threads: " << lio_config.max_num_threads << ". "
+                         << (publish_odom_and_tf ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
+                                                 : std::string("Not publishing odometry"))
+                         << " and acceleration "
                             "estimates to rko_lio/lidar_acceleration. Deskewing is "
                          << (lio->config.deskew ? "enabled" : "disabled") << "."
                          << (publish_deskewed_scan ? (" Publishing the deskewed scan to " + deskewed_scan_topic + ".")
@@ -278,6 +282,9 @@ void BaseNode::publish_lidar_outputs(const core::Vector3sVector& deskewed_scan) 
 
 void BaseNode::publish_odometry(const core::State& state,
                                 const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr& publisher) const {
+  if (!publish_odom_and_tf) {
+    return;
+  }
   nav_msgs::msg::Odometry odom_msg;
   odom_msg.header.stamp = utils::to_ros_time(state.time);
   odom_msg.header.frame_id = odom_frame;
@@ -289,6 +296,9 @@ void BaseNode::publish_odometry(const core::State& state,
 }
 
 void BaseNode::publish_tf(const core::State& state) const {
+  if (!publish_odom_and_tf) {
+    return;
+  }
   geometry_msgs::msg::TransformStamped transform_msg;
   transform_msg.header.stamp = utils::to_ros_time(state.time);
   if (invert_odom_tf) {
@@ -343,9 +353,11 @@ void BaseNode::reset_odometry() {
   }
   lio->restart();
   RCLCPP_WARN_STREAM(node->get_logger(), "Odometry reset count: " << lio->reset_count);
-  std_msgs::msg::UInt32 reset_count_msg;
-  reset_count_msg.data = static_cast<std::uint32_t>(lio->reset_count);
-  reset_count_publisher->publish(reset_count_msg);
+  if (publish_odom_and_tf) {
+    std_msgs::msg::UInt32 reset_count_msg;
+    reset_count_msg.data = static_cast<std::uint32_t>(lio->reset_count);
+    reset_count_publisher->publish(reset_count_msg);
+  }
   if (forced_init_off) {
     RCLCPP_WARN(node->get_logger(),
                 "initialization_phase was enabled; it is off after reset because static start is not guaranteed.");

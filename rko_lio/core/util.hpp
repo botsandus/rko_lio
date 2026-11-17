@@ -26,6 +26,7 @@
 #include "rko_lio/core/scalar.hpp"
 #include <Eigen/Core>
 #include <chrono>
+#include <cstddef>
 #include <sophus/se3.hpp>
 
 // Scalar is either float or double, as configured
@@ -98,6 +99,16 @@ struct ImuControl {
   Nsec time{0};
   Eigen::Vector3s acceleration = Eigen::Vector3s::Zero();
   Eigen::Vector3s angular_velocity = Eigen::Vector3s::Zero();
+};
+
+/** What the odometry had for one scan: its points, the ICP's input and the ICP's last iteration. */
+struct ScanStats {
+  std::size_t input_points = 0; // in the message, before range clipping
+  std::size_t keypoints = 0;    // fed to the ICP
+  int imu_samples = 0;          // since the previous scan
+  std::size_t icp_iterations = 0;
+  int correspondences = 0; // of the last ICP iteration
+  Scalar icp_cost = 0;     // half the mean squared residual of the last ICP iteration
 };
 
 /** Accumulated IMU statistics over the interval between consecutive LiDAR scans. */

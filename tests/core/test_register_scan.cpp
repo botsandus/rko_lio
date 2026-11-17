@@ -136,6 +136,32 @@ TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[regis
   REQUIRE(lio.lidar_state.pose.so3().log().norm() < 1e-3);
 }
 
+TEST_CASE("scan_stats: the scan's points, the ICP's input and last iteration, and the IMU samples it had",
+          "[register_scan]") {
+  LIO lio((LIO::Config{}));
+  const auto cloud = make_hollow_cube();
+
+  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  REQUIRE(lio.scan_stats.input_points == cloud.size()); // the first scan seeds the map: no ICP
+  REQUIRE(lio.scan_stats.icp_iterations == 0);
+
+  feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
+  lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
+  REQUIRE(lio.scan_stats.input_points == cloud.size());
+  REQUIRE(lio.scan_stats.imu_samples == 10);
+  REQUIRE(lio.scan_stats.keypoints > 0);
+  REQUIRE(lio.scan_stats.keypoints <= cloud.size());
+  REQUIRE(lio.scan_stats.icp_iterations >= 1);
+  REQUIRE(lio.scan_stats.icp_iterations <= lio.config.max_iterations);
+  REQUIRE(lio.scan_stats.correspondences > 0);
+  REQUIRE(static_cast<size_t>(lio.scan_stats.correspondences) <= lio.scan_stats.keypoints);
+  REQUIRE(lio.scan_stats.icp_cost < 1e-4); // the same cloud again: it aligns
+
+  lio.register_scan(cloud, instant_timestamps(cloud.size(), FIRST_SCAN_END)); // not after the previous scan: skipped
+  REQUIRE(lio.scan_stats.input_points == cloud.size());
+  REQUIRE(lio.scan_stats.icp_iterations == 0);
+}
+
 TEST_CASE("deskew = false: register_scan still produces a valid pose", "[register_scan]") {
   LIO::Config cfg{};
   cfg.deskew = false;

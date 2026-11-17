@@ -61,7 +61,12 @@ inline void transform_points(const Sophus::SE3s& T, Vector3sVector& points) {
   std::transform(points.begin(), points.end(), points.begin(), [&](const auto& point) { return T * point; });
 }
 
-using LinearSystem = std::tuple<Eigen::Matrix6s, Eigen::Vector6s, Scalar>;
+struct LinearSystem {
+  Eigen::Matrix6s H;
+  Eigen::Vector6s b;
+  Scalar cost;
+  int correspondences;
+};
 LinearSystem build_icp_linear_system(const Sophus::SE3s& current_pose,
                                      const rko_lio::core::Vector3sVector& keypoints,
                                      const rko_lio::core::VoxelHashMap& voxel_map,
@@ -122,19 +127,33 @@ LinearSystem build_icp_linear_system(const Sophus::SE3s& current_pose,
     throw RegistrationError("ICP found no correspondences");
   }
 
-  return {H_icp / correspondences_counter, b_icp / correspondences_counter, 0.5 * chi_icp / correspondences_counter};
+  return {.H = H_icp / correspondences_counter,
+          .b = b_icp / correspondences_counter,
+          .cost = static_cast<Scalar>(0.5 * chi_icp / correspondences_counter),
+          .correspondences = correspondences_counter};
 }
 
-Sophus::SE3s icp(const Vector3sVector& keypoints,
-                 const VoxelHashMap& voxel_map,
-                 const Sophus::SE3s& initial_guess,
-                 const LIO::Config& config) {
-  Sophus::SE3s current_pose = initial_guess;
+struct IcpResult {
+  Sophus::SE3s pose;
+  std::size_t iterations = 0;
+  int correspondences = 0; // of the last iteration
+  Scalar cost = 0;         // of the last iteration
+};
+
+IcpResult icp(const Vector3sVector& keypoints,
+              const VoxelHashMap& voxel_map,
+              const Sophus::SE3s& initial_guess,
+              const LIO::Config& config) {
+  IcpResult result{.pose = initial_guess};
+  Sophus::SE3s& current_pose = result.pose;
   Scalar previous_chi = -1;
 
   for (size_t i = 0; i < config.max_iterations; ++i) {
-    const auto& [H, b, chi] =
+    const auto& [H, b, chi, correspondences] =
         build_icp_linear_system(current_pose, keypoints, voxel_map, config.max_correspondence_distance);
+    result.iterations = i + 1;
+    result.correspondences = correspondences;
+    result.cost = chi;
 
     Eigen::Vector6s dx = Eigen::Vector6s::Zero();
     if (config.flat) {
@@ -150,13 +169,10 @@ Sophus::SE3s icp(const Vector3sVector& keypoints,
     const bool converged = previous_chi > 0 && cost_change <= config.convergence_criterion * previous_chi;
     previous_chi = chi;
     if (converged || i == (config.max_iterations - 1)) {
-      // TODO: proper debug logging
-      // std::cout << "iter " << i << ", beta: " << beta << ", chi: " << chi << ", num_assoc: " <<
-      // correspondences.size() << "\n";
       break;
     }
   }
-  return current_pose;
+  return result;
 }
 
 inline Sophus::SO3s align_accel_to_z_world(const Eigen::Vector3s& accel) {
@@ -357,6 +373,7 @@ void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuC
 // ============================ lidar ===============================
 
 Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timestamps) {
+  scan_stats = {.input_points = scan.size(), .imu_samples = interval_stats.imu_count};
   if (scan.size() != timestamps.per_point.size()) {
     throw InputError("LiDAR timestamps size (" + std::to_string(timestamps.per_point.size()) +
                      ") does not match scan (" + std::to_string(scan.size()) + ").");
@@ -412,6 +429,7 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
   }
   const std::size_t input_scan_size = scan.size();
   auto preproc_result = preprocess_scan(std::move(scan), config);
+  scan_stats.keypoints = preproc_result.keypoints.size();
 
   if (preproc_result.keypoints.size() < 10) {
     const std::string error_msg = "Too few ICP keypoints: " + std::to_string(preproc_result.keypoints.size()) +
@@ -425,8 +443,12 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
 
   if (!map.empty()) {
     UTL_PROFILER_SCOPE("rko_lio: ICP");
-    const Sophus::SE3s optimized_pose =
+    const IcpResult icp_result =
         arena.execute([&] { return icp(preproc_result.keypoints, map, initial_guess, config); });
+    const Sophus::SE3s& optimized_pose = icp_result.pose;
+    scan_stats.icp_iterations = icp_result.iterations;
+    scan_stats.correspondences = icp_result.correspondences;
+    scan_stats.icp_cost = icp_result.cost;
 
     // estimate velocities and accelerations from the new pose
     const auto dt = to_seconds<Scalar>(current_lidar_time - lidar_state.time);

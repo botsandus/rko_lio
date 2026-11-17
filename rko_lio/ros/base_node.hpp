@@ -26,6 +26,7 @@
 #include "rko_lio/core/lio.hpp"
 // stl
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -51,6 +52,8 @@ namespace rko_lio::ros {
 struct LidarScan {
   core::Timestamps timestamps;
   core::Vector3sVector points;
+  core::Nsec transport{0};                       // node clock at arrival minus the scan's last point
+  std::chrono::steady_clock::time_point arrival; // when the callback took the message
 };
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
@@ -90,6 +93,7 @@ public:
   std::mutex local_map_mutex;
 
   bool dump_results = false;
+  bool publish_odom_and_tf = true; // false: the odometry, its tf and the reset count are not published
   bool invert_odom_tf = false;
   bool publish_lidar_acceleration = false;
   bool publish_deskewed_scan = false;

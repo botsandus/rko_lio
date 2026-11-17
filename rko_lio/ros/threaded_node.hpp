@@ -26,15 +26,24 @@
 #include "base_node.hpp"
 // stl
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdint>
+#include <fstream>
 #include <mutex>
 #include <queue>
+#include <stop_token>
+#include <string>
 #include <thread>
 // ros
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 
 namespace rko_lio::ros {
+
+// What became of a scan: registered, skipped by the odometry (out of order, or a fragment), or dropped.
+enum class ScanStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error };
 
 class ThreadedNode : public BaseNode {
 public:
@@ -45,6 +54,19 @@ public:
   std::queue<core::ImuControl> imu_buffer;
   std::queue<LidarScan> lidar_buffer;
   size_t max_lidar_buffer_size = 10;
+
+  // metrics_dir set: each scan's pose (TUM) and statistics (CSV) are appended to two files every write_interval, so a
+  // killed node loses at most that much. publish_metrics: the statistics are also published.
+  std::string metrics_dir;
+  std::chrono::seconds write_interval{60};
+  std::mutex metrics_mutex;
+  std::string pending_poses;
+  std::string pending_scans;
+  std::ofstream poses_file;
+  std::ofstream scans_file;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
+  // the threads last: the registration thread stops first, then the writer writes what is left
+  std::jthread metrics_write_thread;
   std::jthread registration_thread;
 
   ThreadedNode() = delete;
@@ -53,6 +75,13 @@ public:
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void registration_loop();
+
+  // A scan's row: its statistics (empty for one dropped from the buffer) and what became of it; on ok, its pose.
+  void record_scan(const LidarScan& scan,
+                   std::chrono::steady_clock::time_point process_start,
+                   ScanStatus status,
+                   const core::ScanStats& stats);
+  void write_metrics_loop(const std::stop_token& stop);
 
   ~ThreadedNode();
   ThreadedNode(const ThreadedNode&) = delete;

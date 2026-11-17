@@ -97,6 +97,8 @@ public:
 
   /** How many times `reset()` has been called. */
   std::size_t reset_count = 0;
+  /** What the last scan given to `register_scan` had; its ICP fields stay zero if no ICP ran. */
+  ScanStats scan_stats;
 
   explicit LIO(const Config& config_);
 
