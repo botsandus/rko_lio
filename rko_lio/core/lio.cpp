@@ -439,7 +439,8 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
         .angular_velocity = motion.angular_velocity,
     };
     for (std::size_t cloud = 0; cloud < clouds.size(); ++cloud) {
-      deskew_scan(clouds[cloud], timestamps[cloud], current_lidar_time, payload_motion, lidar2base[cloud]);
+      deskew_scan(clouds[cloud], timestamps[cloud], current_lidar_time, payload_motion, lidar2base[cloud],
+                  config.deskew_per_stamp);
     }
   } else {
     to_base_frame(clouds, lidar2base);

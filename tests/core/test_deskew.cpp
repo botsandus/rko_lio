@@ -1,6 +1,7 @@
 #include "rko_lio/core/deskew.hpp"
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -71,20 +72,17 @@ Timestamps organised_timestamps(const int rows, const int columns, const Nsec du
   return {.min = SCAN_START, .max = SCAN_START + duration, .per_point = std::move(per_point)};
 }
 
-Timestamps distinct_timestamps(const int count, const Nsec duration) {
-  return organised_timestamps(1, count, duration);
-}
-
 Scalar max_relative_difference(const Vector3sVector& scan,
                                const Timestamps& timestamps,
                                const MotionPrior& motion,
-                               const Sophus::SE3s& lidar2base) {
+                               const Sophus::SE3s& lidar2base,
+                               const bool per_stamp) {
   Vector3sVector base_scan(scan.size());
   std::transform(scan.cbegin(), scan.cend(), base_scan.begin(),
                  [&](const Eigen::Vector3s& point) { return Eigen::Vector3s(lidar2base * point); });
   const Vector3sVector expected = deskew_per_point(base_scan, timestamps, motion);
   Vector3sVector deskewed = scan;
-  deskew_scan(deskewed, timestamps, timestamps.max, motion, lidar2base);
+  deskew_scan(deskewed, timestamps, timestamps.max, motion, lidar2base, per_stamp);
   Scalar max_difference = 0;
   for (std::size_t i = 0; i < scan.size(); ++i) {
     max_difference = std::max(max_difference, (deskewed[i] - expected[i]).norm() / std::max(scan[i].norm(), Scalar{1}));
@@ -112,34 +110,39 @@ MotionPrior driving_motion(const Timestamps& timestamps) {
 } // namespace
 
 TEST_CASE("deskew_scan: repeated stamps match the extrinsic then the per-point form", "[deskew]") {
+  const bool per_stamp = GENERATE(false, true);
   const Timestamps timestamps = organised_timestamps(128, 450, Nsec(100'000'000));
   REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps),
-                                  mount()) < TOLERANCE);
+                                  mount(), per_stamp) < TOLERANCE);
 }
 
-TEST_CASE("deskew_scan: all-distinct stamps, past the cache's miss limit, match the extrinsic then the per-point form",
-          "[deskew]") {
-  const Timestamps timestamps = distinct_timestamps(20'000, Nsec(100'000'000));
+TEST_CASE("deskew_scan: all-distinct stamps match the extrinsic then the per-point form", "[deskew]") {
+  const Timestamps timestamps = organised_timestamps(1, 20'000, Nsec(100'000'000));
   REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps),
-                                  mount()) < TOLERANCE);
+                                  mount(), false) < TOLERANCE);
 }
 
 TEST_CASE("deskew_scan: an identity extrinsic matches the per-point form", "[deskew]") {
+  const bool per_stamp = GENERATE(false, true);
   const Timestamps timestamps = organised_timestamps(128, 450, Nsec(100'000'000));
   REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps),
-                                  Sophus::SE3s{}) < TOLERANCE);
+                                  Sophus::SE3s{}, per_stamp) < TOLERANCE);
 }
 
 TEST_CASE("deskew_scan: zero angular velocity matches the extrinsic then the per-point form", "[deskew]") {
+  const bool per_stamp = GENERATE(false, true);
   const Timestamps timestamps = organised_timestamps(32, 1024, Nsec(100'000'000));
   MotionPrior motion = driving_motion(timestamps);
   motion.angular_velocity.setZero();
-  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion, mount()) < TOLERANCE);
+  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion, mount(), per_stamp) <
+          TOLERANCE);
 }
 
 TEST_CASE("deskew_scan: a rotation of 3 rad over the scan matches the extrinsic then the per-point form", "[deskew]") {
+  const bool per_stamp = GENERATE(false, true);
   const Timestamps timestamps = organised_timestamps(64, 900, Nsec(300'000'000));
   MotionPrior motion = driving_motion(timestamps);
   motion.angular_velocity = Eigen::Vector3s(1.0, -2.0, 9.7);
-  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion, mount()) < TOLERANCE);
+  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion, mount(), per_stamp) <
+          TOLERANCE);
 }

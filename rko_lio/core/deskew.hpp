@@ -36,16 +36,16 @@ namespace rko_lio::core {
 /**
  * Deskew a scan in place, from the lidar frame to the base frame at reference_time.
  *
- * @param scan Point cloud to deskew in place.
  * @param timestamps Absolute per-point timestamps.
- * @param reference_time The time the deskewed points refer to.
  * @param motion Motion prior of the base frame, spanning the scan.
- * @param lidar2base Extrinsic from the lidar to the base frame.
+ * @param per_stamp Compose one transform per distinct stamp and apply it to that stamp's points, for lidars whose
+ * points share exact stamps; otherwise each point is transformed on its own.
  */
 void deskew_scan(Vector3sVector& scan,
                  const Timestamps& timestamps,
                  const Nsec reference_time,
                  const MotionPrior& motion,
-                 const Sophus::SE3s& lidar2base);
+                 const Sophus::SE3s& lidar2base,
+                 const bool per_stamp);
 
 } // namespace rko_lio::core

@@ -46,6 +46,9 @@ public:
     /** Enable scan deskewing. */
     bool deskew = true;
 
+    /** Deskew with one transform per distinct point stamp, for lidars whose points share exact stamps. */
+    bool deskew_per_stamp = false;
+
     /** Maximum number of ICP iterations. */
     size_t max_iterations = 100;
 

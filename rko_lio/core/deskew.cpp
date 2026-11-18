@@ -26,27 +26,11 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <sophus/se3.hpp>
-#include <vector>
+#include <tsl/robin_map.h>
 
 namespace {
 using namespace rko_lio::core;
-
-// one transform per distinct point stamp, with slots to spare over a scan's distinct stamps so few collide
-constexpr unsigned CACHE_BITS = 12U;
-constexpr std::size_t CACHE_SIZE = std::size_t{1} << CACHE_BITS;
-// 2^64 / golden ratio (Fibonacci hashing): regularly spaced stamps spread evenly over the slots
-constexpr std::uint64_t FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15ULL;
-
-std::size_t cache_slot(const Nsec stamp) {
-  return (static_cast<std::uint64_t>(stamp.count()) * FIBONACCI_MULTIPLIER) >> (64U - CACHE_BITS);
-}
-
-struct CachedTransform {
-  Nsec stamp;
-  Eigen::Matrix<Scalar, 3, 4> reference_T_lidar;
-};
 
 // SE(3) exp about a fixed axis over dt, as R * p + V * rho
 // Rodrigues -> K = hat(axis), R = I + sin(theta) K + (1 - cos theta) K^2
@@ -54,8 +38,7 @@ struct CachedTransform {
 // rho = dt * mean_linear_velocity and theta = angular_speed * dt
 // dt cancels in V * rho
 struct AxisExp {
-  Scalar sin_theta;
-  Scalar one_minus_cos_theta;
+  Eigen::Matrix3s R;
   Eigen::Vector3s V_times_rho;
 };
 } // namespace
@@ -65,7 +48,8 @@ void deskew_scan(Vector3sVector& scan,
                  const Timestamps& timestamps,
                  const Nsec reference_time,
                  const MotionPrior& motion,
-                 const Sophus::SE3s& lidar2base) {
+                 const Sophus::SE3s& lidar2base,
+                 const bool per_stamp) {
   const Sophus::SE3s start2reference = relative_pose_at_time(motion, reference_time).inverse();
   const Eigen::Matrix3s start2reference_rotation = start2reference.so3().matrix();
   const Eigen::Vector3s& start2reference_translation = start2reference.translation();
@@ -87,46 +71,40 @@ void deskew_scan(Vector3sVector& scan,
     const Eigen::Vector3s mean_linear_velocity = motion.linear_velocity + motion.acceleration * dt / 2;
     const Eigen::Vector3s K_times_linear_velocity = axis.cross(mean_linear_velocity);
     return AxisExp{
-        .sin_theta = sin_theta,
-        .one_minus_cos_theta = one_minus_cos_theta,
+        .R = Eigen::Matrix3s::Identity() + sin_theta * K + one_minus_cos_theta * K_squared,
         .V_times_rho = dt * mean_linear_velocity +
                        (one_minus_cos_theta * inverse_angular_speed) * K_times_linear_velocity +
                        ((theta - sin_theta) * inverse_angular_speed) * axis.cross(K_times_linear_velocity),
     };
   };
-  const auto reference_T_lidar_at = [&](const Nsec timestamp) {
-    const AxisExp exp = exp_at(timestamp);
-    const Eigen::Matrix3s R = Eigen::Matrix3s::Identity() + exp.sin_theta * K + exp.one_minus_cos_theta * K_squared;
-    Eigen::Matrix<Scalar, 3, 4> reference_T_lidar;
-    reference_T_lidar.leftCols<3>() = start2reference_rotation * R * lidar2base_rotation;
-    reference_T_lidar.col(3) =
-        start2reference_rotation * (R * lidar2base_translation + exp.V_times_rho) + start2reference_translation;
-    return reference_T_lidar;
-  };
-  const auto deskew_point = [&](const Eigen::Vector3s& lidar_point, const Nsec timestamp) {
-    const AxisExp exp = exp_at(timestamp);
-    const Eigen::Vector3s point = lidar2base * lidar_point;
-    const Eigen::Vector3s K_times_p = axis.cross(point);
-    const Eigen::Vector3s R_times_p =
-        point + exp.sin_theta * K_times_p + exp.one_minus_cos_theta * axis.cross(K_times_p);
-    return Eigen::Vector3s(start2reference_rotation * (R_times_p + exp.V_times_rho) + start2reference_translation);
-  };
 
-  // after as many misses as slots the stamps are not repeating: the remaining points go one by one
-  std::vector<CachedTransform> cache(CACHE_SIZE,
-                                     {.stamp = Nsec::min(), .reference_T_lidar = Eigen::Matrix<Scalar, 3, 4>::Zero()});
-  std::size_t misses = 0;
-  auto point = scan.begin();
-  auto timestamp = timestamps.per_point.cbegin();
-  for (; point != scan.end() && misses < CACHE_SIZE; ++point, ++timestamp) {
-    CachedTransform& entry = cache[cache_slot(*timestamp)];
-    if (entry.stamp != *timestamp) {
-      ++misses;
-      entry = {.stamp = *timestamp, .reference_T_lidar = reference_T_lidar_at(*timestamp)};
-    }
-    *point = entry.reference_T_lidar.leftCols<3>() * *point + entry.reference_T_lidar.col(3);
+  if (!per_stamp) {
+    std::transform(scan.cbegin(), scan.cend(), timestamps.per_point.cbegin(), scan.begin(),
+                   [&](const Eigen::Vector3s& lidar_point, const Nsec timestamp) {
+                     const AxisExp exp = exp_at(timestamp);
+                     const Eigen::Vector3s point = lidar2base_rotation * lidar_point + lidar2base_translation;
+                     return Eigen::Vector3s(start2reference_rotation * (exp.R * point + exp.V_times_rho) +
+                                            start2reference_translation);
+                   });
+    return;
   }
-  std::transform(point, scan.end(), timestamp, point, deskew_point);
+
+  tsl::robin_map<Nsec::rep, Eigen::Matrix<Scalar, 3, 4>> lidar2reference_by_stamp;
+  lidar2reference_by_stamp.reserve(1024);
+  std::transform(scan.cbegin(), scan.cend(), timestamps.per_point.cbegin(), scan.begin(),
+                 [&](const Eigen::Vector3s& lidar_point, const Nsec timestamp) {
+                   auto [entry, inserted] = lidar2reference_by_stamp.try_emplace(timestamp.count());
+                   if (inserted) {
+                     const AxisExp exp = exp_at(timestamp);
+                     Eigen::Matrix<Scalar, 3, 4>& lidar2reference = entry.value();
+                     lidar2reference.leftCols<3>() = start2reference_rotation * exp.R * lidar2base_rotation;
+                     lidar2reference.col(3) =
+                         start2reference_rotation * (exp.R * lidar2base_translation + exp.V_times_rho) +
+                         start2reference_translation;
+                   }
+                   const Eigen::Matrix<Scalar, 3, 4>& lidar2reference = entry->second;
+                   return Eigen::Vector3s(lidar2reference.leftCols<3>() * lidar_point + lidar2reference.col(3));
+                 });
 }
 
 } // namespace rko_lio::core

@@ -23,6 +23,7 @@ odom_at_imu_rate: false
 
 # lio config
 deskew: true
+deskew_per_stamp: false  # for lidars whose points share exact stamps, for example one per column
 voxel_size: 1.0
 max_range: 100.0
 min_range: 1.0
