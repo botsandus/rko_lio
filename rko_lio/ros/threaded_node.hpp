@@ -86,7 +86,7 @@ public:
 
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
-  void merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
+  void multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();
   void add_to_lidar_buffer(LidarScan scan);
   void registration_loop();

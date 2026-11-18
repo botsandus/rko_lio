@@ -58,7 +58,7 @@ public:
       merge_subs.push_back(utils::create_lidar_subscription(
           node, lidar_topics[input], qos_lidar,
           [this, input](const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) {
-            merge_callback(lidar_msg, input);
+            multi_lidar_callback(lidar_msg, input);
           }));
     }
   }

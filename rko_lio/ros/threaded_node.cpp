@@ -96,8 +96,8 @@ void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstShar
   }
 }
 
-void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
-                                  const std::size_t input) {
+void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                                        const std::size_t input) {
   MergeInput& in = merge_inputs[input];
   if (!in.lidar2base) {
     in.lidar2base = utils::get_transform(tf_buffer, lidar_msg->header.frame_id, base_frame, 0s);
