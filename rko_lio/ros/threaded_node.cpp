@@ -29,7 +29,9 @@
 // stl
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <format>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -41,11 +43,10 @@ using namespace std::literals;
 // while no scan waits for them, the IMU buffer keeps this much before its newest sample
 constexpr rko_lio::core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
 
-// Merging assumes phase-locked lidars: one revolution's scans end within MAX_PHASE_SPREAD of each other (measured
-// within 0.25 ms on a B18). A scan ending more than half a 10 Hz period after the open revolution belongs to the next
-// one.
+// Merging assumes phase-locked lidars at 10 Hz: one revolution's scans end within MAX_PHASE_SPREAD of each other
+// (measured within 0.3 ms on a B18), one LIDAR_PERIOD after the previous revolution.
 constexpr rko_lio::core::Nsec MAX_PHASE_SPREAD = 5ms;
-constexpr rko_lio::core::Nsec NEXT_REVOLUTION = 50ms;
+constexpr rko_lio::core::Nsec LIDAR_PERIOD = 100ms;
 constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
 
 constexpr std::array<std::string_view, 6> SCAN_STATUS_NAMES = {
@@ -134,44 +135,72 @@ void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstShar
     for (Eigen::Vector3s& point : scan.points) {
       point = *in.lidar2base * point;
     }
-    const auto open = std::ranges::find_if(merge_inputs, [](const MergeInput& m) { return m.scan.has_value(); });
-    if (in.scan || (open != merge_inputs.end() &&
-                    std::chrono::abs(scan.timestamps.max - open->scan->timestamps.max) > NEXT_REVOLUTION)) {
-      merge_open_revolution(); // a lidar missed the open revolution: merge what came
+    if (!revolution_origin) {
+      revolution_origin = scan.timestamps.max;
     }
-    in.scan = std::move(scan);
-    if (std::ranges::all_of(merge_inputs, [](const MergeInput& m) { return m.scan.has_value(); })) {
-      merge_open_revolution();
+    const std::int64_t revolution =
+        std::llround(core::to_seconds(scan.timestamps.max - *revolution_origin) / core::to_seconds(LIDAR_PERIOD));
+    std::vector<std::optional<LidarScan>>& slots = open_revolutions[revolution];
+    slots.resize(merge_inputs.size());
+    if (revolution <= last_merged_revolution || slots[input]) {
+      RCLCPP_WARN_STREAM(node->get_logger(), "Dropping a LiDAR scan from "
+                                                 << in.topic
+                                                 << (slots[input] ? ": a second one in one revolution"
+                                                                  : ": its revolution was merged without it"));
+      record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.points.size()});
+      if (revolution <= last_merged_revolution) {
+        open_revolutions.erase(revolution);
+      }
+      return;
     }
+    slots[input] = std::move(scan);
+    merge_ready_revolutions();
   } catch (const core::InputError& ex) {
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
   }
 }
 
-void ThreadedNode::merge_open_revolution() {
+void ThreadedNode::merge_ready_revolutions() {
+  // oldest first: a complete revolution; an incomplete one once a newer one is complete or two newer ones are open
+  // (its missing lidars dropped that scan)
+  const auto complete = [](const auto& revolution) {
+    return std::ranges::all_of(revolution.second, [](const auto& slot) { return slot.has_value(); });
+  };
+  while (!open_revolutions.empty()) {
+    const auto oldest = open_revolutions.begin();
+    const bool newer_complete = std::any_of(std::next(oldest), open_revolutions.end(), complete);
+    const bool stale = open_revolutions.rbegin()->first - oldest->first >= 2;
+    if (!complete(*oldest) && !newer_complete && !stale) {
+      return;
+    }
+    last_merged_revolution = oldest->first;
+    merge_revolution(oldest->second);
+    open_revolutions.erase(oldest);
+  }
+}
+
+void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots) {
   LidarScan merged{.timestamps = {.min = core::Nsec::max(), .max = core::Nsec::min()}};
   core::Nsec first_end = core::Nsec::max();
   core::Nsec last_end = core::Nsec::min();
-  core::Nsec last_arrival_node_clock = core::Nsec::min();
   std::string missing;
-  for (MergeInput& m : merge_inputs) {
-    if (!m.scan) {
-      missing += " " + m.topic;
+  for (std::size_t input = 0; input < slots.size(); ++input) {
+    if (!slots[input]) {
+      missing += " " + merge_inputs[input].topic;
       continue;
     }
-    LidarScan& scan = *m.scan;
+    LidarScan& scan = *slots[input];
     merged.timestamps.min = std::min(merged.timestamps.min, scan.timestamps.min);
     merged.timestamps.max = std::max(merged.timestamps.max, scan.timestamps.max);
     merged.timestamps.per_point.insert(merged.timestamps.per_point.end(), scan.timestamps.per_point.begin(),
                                        scan.timestamps.per_point.end());
     merged.points.insert(merged.points.end(), scan.points.begin(), scan.points.end());
-    merged.arrival = std::max(merged.arrival, scan.arrival);
     first_end = std::min(first_end, scan.timestamps.max);
     last_end = std::max(last_end, scan.timestamps.max);
-    last_arrival_node_clock = std::max(last_arrival_node_clock, scan.timestamps.max + scan.transport);
-    m.scan.reset();
   }
-  merged.transport = last_arrival_node_clock - merged.timestamps.max;
+  // from the scan end until the merge exists, the wait for every lidar included; queue then holds only the backlog
+  merged.arrival = std::chrono::steady_clock::now();
+  merged.transport = utils::to_ns(node->now()) - merged.timestamps.max;
   if (last_end - first_end > MAX_PHASE_SPREAD) {
     const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
     const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_PHASE_SPREAD).count();

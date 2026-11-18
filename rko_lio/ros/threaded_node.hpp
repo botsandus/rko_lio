@@ -29,6 +29,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <queue>
@@ -58,16 +60,19 @@ public:
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
 
-  // lidar_topics: per lidar, its scan of the open revolution in the base frame; when every lidar has one, they are
-  // concatenated with their own point times into one scan. Only the lidar callbacks touch them, on the one executor
-  // thread.
+  // lidar_topics: each lidar's scans go into the base frame and are grouped by revolution (scan end relative to the
+  // first one seen, in 10 Hz periods); a revolution's scans are concatenated with their own point times into one scan.
+  // Only the lidar callbacks touch these; they share the node's default (mutually exclusive) callback group, so they
+  // never run at once.
   struct MergeInput {
     std::string topic;
     std::optional<Sophus::SE3s> lidar2base; // from tf on its first scan: the lidars are rigid
     core::ScanFragmentCheck fragments;
-    std::optional<LidarScan> scan;
   };
   std::vector<MergeInput> merge_inputs;
+  std::map<std::int64_t, std::vector<std::optional<LidarScan>>> open_revolutions; // one slot per lidar
+  std::optional<core::Nsec> revolution_origin;
+  std::int64_t last_merged_revolution = std::numeric_limits<std::int64_t>::min();
   int consecutive_unsynced = 0;
   // stops before BaseNode's results writer, which then writes what is left
   std::jthread registration_thread;
@@ -78,7 +83,8 @@ public:
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, std::size_t input);
-  void merge_open_revolution();
+  void merge_ready_revolutions();
+  void merge_revolution(std::vector<std::optional<LidarScan>>& slots);
   void enqueue_scan(LidarScan scan);
   void registration_loop();
 

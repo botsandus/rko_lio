@@ -84,6 +84,10 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   imu_frame = node->declare_parameter<std::string>("imu_frame", imu_frame);
   lidar_frame = node->declare_parameter<std::string>("lidar_frame", lidar_frame);
   if (!lidar_topics.empty()) {
+    if (!lidar_frame.empty()) {
+      throw std::invalid_argument(
+          "lidar_frame is per lidar: with lidar_topics each lidar's frame comes from its scans.");
+    }
     lidar_frame = base_frame; // the merged scan is in the base frame already: each lidar's extrinsic is applied first
   }
   odom_frame = node->declare_parameter<std::string>("odom_frame", odom_frame);
@@ -169,7 +173,9 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   RCLCPP_INFO_STREAM(node->get_logger(),
                      "Subscribed to IMU: "
                          << imu_topic << (!imu_frame.empty() ? " (frame " + imu_frame + ")" : "") << " and LiDAR: "
-                         << lidar_topic << (!lidar_frame.empty() ? " (frame " + lidar_frame + ")" : "")
+                         << (lidar_topics.empty() ? lidar_topic
+                                                  : "a merge of " + std::to_string(lidar_topics.size()) + " lidars")
+                         << (!lidar_frame.empty() ? " (frame " + lidar_frame + ")" : "")
                          << ". Max number of threads: " << lio_config.max_num_threads << ". "
                          << (publish_odom_and_tf ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
                                                  : std::string("Not publishing odometry"))
@@ -225,6 +231,14 @@ void BaseNode::parse_cli_extrinsics() {
   };
   const bool imu_ok = parse_extrinsic("imu", extrinsic_imu2base);
   const bool lidar_ok = parse_extrinsic("lidar", extrinsic_lidar2base);
+  if (!lidar_topics.empty()) {
+    if (lidar_ok) {
+      throw std::invalid_argument(
+          "extrinsic_lidar2base_quat_xyzw_xyz is per lidar: with lidar_topics each lidar's extrinsic comes from tf.");
+    }
+    extrinsics_set = imu_ok; // the merged scan's own extrinsic is the identity
+    return;
+  }
   extrinsics_set = imu_ok && lidar_ok;
 }
 
