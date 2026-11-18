@@ -56,7 +56,7 @@ namespace rko_lio::ros {
 // one scan per lidar: one, or several when merging
 struct LidarPayload {
   std::vector<core::Timestamps> timestamps; // per cloud, each with its own min/max
-  std::vector<core::Vector3sVector> points;
+  std::vector<core::Vector3sVector> clouds;
   // per cloud: from its lidar's frame, which its points are in, to the base frame
   std::vector<Sophus::SE3s> lidar2base;
   // node clock minus the payload end, on entering rko_lio's callback, or merging, at the merge
@@ -69,7 +69,7 @@ struct LidarPayload {
   core::Nsec end() const { return std::ranges::max(timestamps, {}, &core::Timestamps::max).max; }
   std::size_t point_count() const {
     std::size_t count = 0;
-    for (const core::Vector3sVector& cloud : points) {
+    for (const core::Vector3sVector& cloud : clouds) {
       count += cloud.size();
     }
     return count;
@@ -148,7 +148,7 @@ public:
                                                             const std::span<const core::Timestamps> timestamps,
                                                             const std::span<const Sophus::SE3s> lidar2base);
 
-  void publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const;
+  void publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_clouds) const;
 
   void publish_odometry(const core::State& state,
                         const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr& publisher) const;

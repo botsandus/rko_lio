@@ -64,7 +64,7 @@ public:
   struct MultiLidarInput {
     std::string topic;
     std::optional<Sophus::SE3s> lidar2base; // from tf on its first scan: the lidars are rigid
-    core::ScanFragmentCheck fragments;
+    core::ScanFragmentCheck fragment_check;
   };
   struct PayloadSlot {
     std::optional<LidarPayload> scan;
@@ -72,12 +72,12 @@ public:
   };
   struct PayloadAnchor {
     core::Nsec end{0};
-    std::int64_t payload = 0;
+    std::int64_t index = 0;
   };
   std::vector<MultiLidarInput> multi_lidar_inputs;
   std::map<std::int64_t, std::vector<PayloadSlot>> open_payloads; // one slot per lidar
   std::optional<PayloadAnchor> payload_anchor;
-  std::int64_t last_merged_payload = std::numeric_limits<std::int64_t>::min();
+  std::int64_t last_merged_payload_index = std::numeric_limits<std::int64_t>::min();
   int consecutive_unsynced = 0;
   std::jthread registration_thread;
 

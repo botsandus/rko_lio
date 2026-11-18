@@ -61,7 +61,7 @@ ThreadedNode::ThreadedNode(const std::string& node_name, const rclcpp::NodeOptio
     : BaseNode(node_name, options) {
   max_lidar_buffer_size = static_cast<size_t>(
       node->declare_parameter<int>("async.max_lidar_buffer_size", static_cast<int>(max_lidar_buffer_size)));
-  if (node->declare_parameter<bool>("publish_metrics", false)) {
+  if (node->declare_parameter<bool>("publish_payload_metrics", false)) {
     payload_metrics_publisher =
         node->create_publisher<std_msgs::msg::Float64MultiArray>("rko_lio/payload_metrics", 100);
   }
@@ -113,36 +113,36 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
                                         << " s from the merge anchor: re-anchoring the merge on it");
       open_payloads.clear();
       payload_anchor.reset();
-      last_merged_payload = std::numeric_limits<std::int64_t>::min();
+      last_merged_payload_index = std::numeric_limits<std::int64_t>::min();
     }
     if (!payload_anchor) {
-      payload_anchor = PayloadAnchor{.end = scan.end(), .payload = 0};
+      payload_anchor = PayloadAnchor{.end = scan.end(), .index = 0};
     }
-    const std::int64_t payload =
-        payload_anchor->payload +
+    const std::int64_t payload_index =
+        payload_anchor->index +
         std::llround(core::to_seconds(scan.end() - payload_anchor->end) / core::to_seconds(LIDAR_PERIOD));
-    if (in.fragments.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
-                                 static_cast<core::Scalar>(scan.point_count()))) {
+    if (in.fragment_check.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
+                                      static_cast<core::Scalar>(scan.point_count()))) {
       RCLCPP_WARN_STREAM(node->get_logger(),
                          "Dropping a LiDAR scan fragment of " << scan.point_count() << " points from " << in.topic);
       publish_payload_metrics(scan, std::chrono::steady_clock::now(), PayloadStatus::skipped,
                               {.input_points = scan.point_count()});
-      if (payload > last_merged_payload) {
-        std::vector<PayloadSlot>& slots = open_payloads[payload];
+      if (payload_index > last_merged_payload_index) {
+        std::vector<PayloadSlot>& slots = open_payloads[payload_index];
         slots.resize(multi_lidar_inputs.size());
         slots[input].dropped = true;
         merge_ready_payloads();
       }
       return;
     }
-    if (payload <= last_merged_payload) {
+    if (payload_index <= last_merged_payload_index) {
       RCLCPP_WARN_STREAM(node->get_logger(),
                          "Dropping a LiDAR scan from " << in.topic << ": its payload was merged without it");
       publish_payload_metrics(scan, std::chrono::steady_clock::now(), PayloadStatus::skipped,
                               {.input_points = scan.point_count()});
       return;
     }
-    std::vector<PayloadSlot>& slots = open_payloads[payload];
+    std::vector<PayloadSlot>& slots = open_payloads[payload_index];
     slots.resize(multi_lidar_inputs.size());
     if (slots[input].scan) {
       RCLCPP_WARN_STREAM(node->get_logger(),
@@ -151,8 +151,8 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
                               {.input_points = scan.point_count()});
       return;
     }
-    if (payload > payload_anchor->payload) {
-      payload_anchor = PayloadAnchor{.end = scan.end(), .payload = payload};
+    if (payload_index > payload_anchor->index) {
+      payload_anchor = PayloadAnchor{.end = scan.end(), .index = payload_index};
     }
     slots[input].scan = std::move(scan);
     merge_ready_payloads();
@@ -173,19 +173,19 @@ void ThreadedNode::merge_ready_payloads() {
     if (!complete(*oldest) && !newer_complete && !stale) {
       return;
     }
-    last_merged_payload = oldest->first;
+    last_merged_payload_index = oldest->first;
     std::vector<PayloadSlot> slots = std::move(oldest->second);
     open_payloads.erase(oldest);
     UTL_PROFILER_SCOPE("rko_lio: merge payload");
     LidarPayload merged;
     core::Nsec first_end = core::Nsec::max();
     core::Nsec last_end = core::Nsec::min();
-    std::string missing;
+    std::string missing_topics;
     for (std::size_t input = 0; input < slots.size(); ++input) {
       PayloadSlot& slot = slots[input];
       if (!slot.scan) {
         if (!slot.dropped) {
-          missing += " " + multi_lidar_inputs[input].topic;
+          missing_topics += " " + multi_lidar_inputs[input].topic;
         }
         continue;
       }
@@ -193,14 +193,14 @@ void ThreadedNode::merge_ready_payloads() {
       first_end = std::min(first_end, scan.end());
       last_end = std::max(last_end, scan.end());
       merged.timestamps.push_back(std::move(scan.timestamps.front()));
-      merged.points.push_back(std::move(scan.points.front()));
+      merged.clouds.push_back(std::move(scan.clouds.front()));
       merged.lidar2base.push_back(scan.lidar2base.front());
       if (scan.ready > merged.ready) {
         merged.arrival = scan.arrival;
         merged.ready = scan.ready;
       }
     }
-    if (merged.points.empty()) {
+    if (merged.clouds.empty()) {
       continue;
     }
     // upstream includes the wait for the last lidar
@@ -224,8 +224,8 @@ void ThreadedNode::merge_ready_payloads() {
       continue;
     }
     consecutive_unsynced = 0;
-    if (!missing.empty()) {
-      RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan in this payload from" << missing);
+    if (!missing_topics.empty()) {
+      RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan in this payload from" << missing_topics);
     }
     add_to_lidar_buffer(std::move(merged));
   }
@@ -237,7 +237,7 @@ void ThreadedNode::add_to_lidar_buffer(LidarPayload payload) {
     const std::scoped_lock lock(buffer_mutex);
     if (lidar_buffer.size() >= max_lidar_buffer_size) {
       RCLCPP_WARN_STREAM(node->get_logger(),
-                         "Registration lidar buffer limit reached. Dropping oldest buffered frame.");
+                         "Registration lidar buffer limit reached. Dropping oldest buffered payload.");
       dropped = std::move(lidar_buffer.front());
       lidar_buffer.pop();
     }
@@ -276,15 +276,15 @@ void ThreadedNode::registration_loop() {
     buffer_lock.unlock(); // we dont touch the buffers anymore
 
     try {
-      const std::vector<core::Vector3sVector> deskewed_scan =
-          register_payload_locked(std::move(payload.points), payload.timestamps, payload.lidar2base);
-      if (!deskewed_scan.empty()) {
+      const std::vector<core::Vector3sVector> deskewed_clouds =
+          register_payload_locked(std::move(payload.clouds), payload.timestamps, payload.lidar2base);
+      if (!deskewed_clouds.empty()) {
         // TODO: first payload is skipped and an empty payload is returned. improve how we handle this
         publish_tf(lio->lidar_state);
-        publish_lidar_outputs(deskewed_scan);
+        publish_lidar_outputs(deskewed_clouds);
       }
       publish_payload_metrics(payload, registration_start,
-                              deskewed_scan.empty() ? PayloadStatus::skipped : PayloadStatus::ok, lio->payload_stats);
+                              deskewed_clouds.empty() ? PayloadStatus::skipped : PayloadStatus::ok, lio->payload_stats);
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping payload: " << ex.what());
       publish_payload_metrics(payload, registration_start, PayloadStatus::input_error, lio->payload_stats);
@@ -310,23 +310,23 @@ void ThreadedNode::publish_payload_metrics(const LidarPayload& payload,
   if (!payload_metrics_publisher) {
     return;
   }
-  const std::int64_t scan_end = payload.end().count();
-  const std::int64_t duration = (payload.end() - payload.start()).count();
-  const std::int64_t upstream = payload.upstream.count();
-  const std::int64_t convert = ns_between(payload.arrival, payload.ready);
-  const std::int64_t wait = ns_between(payload.ready, registration_start);
-  const std::int64_t registration = ns_between(registration_start, std::chrono::steady_clock::now());
-  // scan_end_ns as a double is rounded to 256 ns; the other values are exact
+  const std::int64_t end_ns = payload.end().count();
+  const std::int64_t duration_ns = (payload.end() - payload.start()).count();
+  const std::int64_t upstream_ns = payload.upstream.count();
+  const std::int64_t convert_ns = ns_between(payload.arrival, payload.ready);
+  const std::int64_t wait_ns = ns_between(payload.ready, registration_start);
+  const std::int64_t registration_ns = ns_between(registration_start, std::chrono::steady_clock::now());
+  // end_ns as a double is rounded to 256 ns; the other values are exact
   std_msgs::msg::Float64MultiArray msg;
   std_msgs::msg::MultiArrayDimension& fields = msg.layout.dim.emplace_back();
   fields.label = std::string(PAYLOAD_METRICS_FIELDS);
   msg.data = {
-      static_cast<double>(scan_end),
-      static_cast<double>(duration),
-      static_cast<double>(upstream),
-      static_cast<double>(convert),
-      static_cast<double>(wait),
-      static_cast<double>(registration),
+      static_cast<double>(end_ns),
+      static_cast<double>(duration_ns),
+      static_cast<double>(upstream_ns),
+      static_cast<double>(convert_ns),
+      static_cast<double>(wait_ns),
+      static_cast<double>(registration_ns),
       static_cast<double>(status),
       static_cast<double>(stats.input_points),
       static_cast<double>(stats.keypoints),

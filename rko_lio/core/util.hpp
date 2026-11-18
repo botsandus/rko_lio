@@ -110,18 +110,18 @@ public:
   bool is_fragment(const Scalar duration_s, const Scalar point_count) {
     constexpr Scalar SCAN_FRAGMENT_FRACTION = 0.25;
     constexpr Scalar LOWPASS_TIME_CONSTANT = 10;
-    if (duration_s < SCAN_FRAGMENT_FRACTION * lowpass_duration_ &&
+    if (duration_s < SCAN_FRAGMENT_FRACTION * lowpass_duration_s_ &&
         point_count < SCAN_FRAGMENT_FRACTION * lowpass_point_count_) {
       return true;
     }
     const Scalar alpha = lowpass_point_count_ > 0 ? 1 / LOWPASS_TIME_CONSTANT : 1;
-    lowpass_duration_ += alpha * (duration_s - lowpass_duration_);
+    lowpass_duration_s_ += alpha * (duration_s - lowpass_duration_s_);
     lowpass_point_count_ += alpha * (point_count - lowpass_point_count_);
     return false;
   }
 
 private:
-  Scalar lowpass_duration_ = 0;
+  Scalar lowpass_duration_s_ = 0;
   Scalar lowpass_point_count_ = 0;
 };
 

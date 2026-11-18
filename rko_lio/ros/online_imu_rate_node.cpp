@@ -102,14 +102,14 @@ public:
 
     try {
       LidarPayload payload = process_lidar_msg(lidar_msg, *extrinsic_lidar2base);
-      const std::vector<core::Vector3sVector> deskewed_scan =
-          register_payload_locked(std::move(payload.points), payload.timestamps, payload.lidar2base);
-      if (deskewed_scan.empty()) {
+      const std::vector<core::Vector3sVector> deskewed_clouds =
+          register_payload_locked(std::move(payload.clouds), payload.timestamps, payload.lidar2base);
+      if (deskewed_clouds.empty()) {
         // the first payload is skipped and returns nothing to publish
         return;
       }
       publish_tf(lio->lidar_state);
-      publish_lidar_outputs(deskewed_scan);
+      publish_lidar_outputs(deskewed_clouds);
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping payload: " << ex.what());
     } catch (const core::RegistrationError& ex) {

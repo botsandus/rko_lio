@@ -35,7 +35,7 @@ inline Nsec ns_from_seconds(double s) { return Nsec(static_cast<int64_t>(std::ll
 } // namespace
 
 namespace {
-// dt between consecutive scans, used to derive the IMU values that produce a
+// dt between consecutive payloads, used to derive the IMU values that produce a
 // given initial-guess pose. With v0 = 0 the kinematic model collapses to
 //   tau.head = a * DT^2 / 2,  tau.tail = omega * DT,  initial_guess = SE3::exp(tau).
 constexpr double DT = 1.0;
@@ -55,7 +55,7 @@ Timestamps linspace_timestamps(size_t n, double t_start, double t_end) {
       .min = std::min(t_start_ns, t_end_ns), .max = std::max(t_start_ns, t_end_ns), .per_point = std::move(ts)};
 }
 
-// Single-instant timestamps for the second scan: deskewing reduces to identity
+// Single-instant timestamps for the second payload: deskewing reduces to identity
 // when every point shares end_time.
 Timestamps instant_timestamps(size_t n, double t) {
   return Timestamps{
@@ -113,7 +113,7 @@ constexpr double NOISY_ACCEL_STDDEV = 0.05; // m/s^2
 constexpr double NOISY_GYRO_STDDEV = 5e-3;  // rad/s
 } // namespace
 
-TEST_CASE("First scan: empty map -> populated, single pose at lidar_state.time", "[register_payload]") {
+TEST_CASE("First payload: empty map -> populated, single pose at lidar_state.time", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   const auto ts = linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END);
@@ -141,14 +141,14 @@ TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[regis
   REQUIRE(lio.lidar_state.pose.so3().log().norm() < 1e-3);
 }
 
-TEST_CASE("payload_stats: the scan's points, the ICP's input and last iteration, and the IMU samples it had",
+TEST_CASE("payload_stats: the payload's points, the ICP's input and last iteration, and the IMU samples it had",
           "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
-  REQUIRE(lio.payload_stats.input_points == cloud.size()); // the first scan seeds the map: no ICP
-  REQUIRE(lio.payload_stats.icp_iterations == 0);
+  REQUIRE(lio.payload_stats.input_points == cloud.size());
+  REQUIRE(lio.payload_stats.icp_iterations == 0); // the first payload seeds the map: no ICP
 
   feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
   register_cloud(lio, cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
@@ -162,7 +162,8 @@ TEST_CASE("payload_stats: the scan's points, the ICP's input and last iteration,
   REQUIRE(std::cmp_less_equal(lio.payload_stats.correspondences, lio.payload_stats.keypoints));
   REQUIRE(lio.payload_stats.icp_cost < 1e-4); // the same cloud again: it aligns
 
-  register_cloud(lio, cloud, instant_timestamps(cloud.size(), FIRST_SCAN_END)); // not after the previous scan: skipped
+  // not after the previous payload: skipped
+  register_cloud(lio, cloud, instant_timestamps(cloud.size(), FIRST_SCAN_END));
   REQUIRE(lio.payload_stats.input_points == cloud.size());
   REQUIRE(lio.payload_stats.icp_iterations == 0);
 }
@@ -260,7 +261,7 @@ TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[r
   REQUIRE(approx_equal(lio.lidar_state.pose, ground_truth, 1e-2));
 }
 
-TEST_CASE("Gap in the lidar stream: second scan has real per-point spread, not instant", "[register_payload]") {
+TEST_CASE("Gap in the lidar stream: second payload has real per-point spread, not instant", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube(2.0, 5.0);
 
@@ -415,7 +416,8 @@ TEST_CASE("register_payload: timestamp count mismatch throws instead of UB", "[r
   REQUIRE_THROWS_AS(register_cloud(lio, cloud, ts), InputError);
 }
 
-TEST_CASE("register_payload: a scan without one extrinsic per cloud throws, its own stats set", "[register_payload]") {
+TEST_CASE("register_payload: a payload without one extrinsic per cloud throws, its own stats set",
+          "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
@@ -443,7 +445,7 @@ TEST_CASE("register_payload: each cloud's extrinsic brings it to the base frame"
     }
   }
 
-  // the first scan seeds the map without deskewing, the second one is registered
+  // the first payload seeds the map without deskewing, the second one is registered
   for (const double scan_end : {FIRST_SCAN_END, SECOND_SCAN_END}) {
     const std::array<Timestamps, 2> timestamps{
         instant_timestamps(cube.size(), scan_end),
@@ -477,7 +479,7 @@ TEST_CASE("register_payload: zero correspondences throws RegistrationError", "[r
   REQUIRE(lio.lidar_state.time == time_before);
 }
 
-TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan", "[register_payload]") {
+TEST_CASE("reset after RegistrationError: next payload bootstraps like a first payload", "[register_payload]") {
   LIO::Config cfg{};
   cfg.initialization_phase = true;
   LIO lio(cfg);
@@ -509,7 +511,7 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
 }
 
-TEST_CASE("A scan that does not end after the previous one, or a fragment of a scan, is dropped",
+TEST_CASE("A payload that does not end after the previous one, or a fragment of a payload, is dropped",
           "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
@@ -528,7 +530,7 @@ TEST_CASE("A scan that does not end after the previous one, or a fragment of a s
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
 }
 
-TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped", "[register_payload]") {
+TEST_CASE("A full payload ending less than 10 ms after the previous one is dropped", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));

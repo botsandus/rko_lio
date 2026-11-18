@@ -203,13 +203,13 @@ LidarPayload BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Co
   if (lio->config.deskew) {
     utils::RawScan raw = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
     payload.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
-    payload.points.push_back(std::move(raw.points));
+    payload.clouds.push_back(std::move(raw.points));
   } else {
     RCLCPP_WARN_STREAM_ONCE(node->get_logger(),
                             "Deskewing is disabled. Populating timestamps with static header time.");
-    payload.points.push_back(utils::point_cloud2_to_eigen(lidar_msg));
+    payload.clouds.push_back(utils::point_cloud2_to_eigen(lidar_msg));
     payload.timestamps.push_back({.min = header_stamp, .max = header_stamp});
-    payload.timestamps.front().per_point.assign(payload.points.front().size(), header_stamp);
+    payload.timestamps.front().per_point.assign(payload.clouds.front().size(), header_stamp);
   }
   payload.lidar2base.push_back(lidar2base);
   payload.upstream = arrival_node_clock - payload.end();
@@ -231,7 +231,7 @@ std::vector<core::Vector3sVector> BaseNode::register_payload_locked(std::vector<
   return lio->register_payload(std::move(clouds), timestamps, lidar2base);
 }
 
-void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const {
+void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_clouds) const {
   publish_odometry(lio->lidar_state, odom_publisher);
   if (publish_lidar_acceleration) {
     publish_lidar_accel(lio->lidar_state);
@@ -241,7 +241,7 @@ void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& de
     header.frame_id = base_frame;
     header.stamp = utils::to_ros_time(lio->lidar_state.time);
     core::Vector3sVector points; // one message for all clouds
-    for (const core::Vector3sVector& cloud : deskewed_scan) {
+    for (const core::Vector3sVector& cloud : deskewed_clouds) {
       points.insert(points.end(), cloud.begin(), cloud.end());
     }
     frame_publisher->publish(utils::eigen_to_point_cloud2(points, header));
