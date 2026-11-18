@@ -34,6 +34,8 @@
 
 #include <tbb/task_arena.h>
 
+#include <deque>
+
 /** Core namespace containing LIO data structures and state definitions. */
 namespace rko_lio::core {
 /** Core LiDAR-inertial odometry algorithm class. */
@@ -135,11 +137,16 @@ public:
   Vector3sVector
   register_scan(const Sophus::SE3s& extrinsic_lidar2base, Vector3sVector scan, const Timestamps& timestamps);
 
-  /** Restart, treating the next scan as if it were the first. Forces `config.initialization_phase` off. */
+  /** Restart, treating the next scan as if it were the first. Keeps the IMU bias estimates; forces
+   *  `config.initialization_phase` off. */
   void restart();
 
-  /** Sequence of registered scan poses with corresponding timestamps. */
-  std::vector<std::pair<Nsec, Sophus::SE3s>> poses_with_timestamps;
+  /** How many registered poses `poses_with_timestamps` keeps; the oldest goes first. */
+  static constexpr std::size_t POSE_WINDOW_SIZE = 600;
+
+  /** The last `POSE_WINDOW_SIZE` registered scan poses with their timestamps. A caller that keeps the trajectory moves
+   *  them out as they come. */
+  std::deque<std::pair<Nsec, Sophus::SE3s>> poses_with_timestamps;
 
   /** Base-frame state propagated from IMU measurements. Runs ahead of `lidar_state` between scans; reset to the
    *  optimized lidar pose after each successful registration. Used for gravity compensation and for publishing
@@ -159,6 +166,9 @@ private:
 
   /** Motion prior for the coming scan, from the IMU interval average */
   MotionPrior motion_prior_from_imu(const Nsec current_lidar_time);
+
+  /** Appends the lidar state's time and pose to `poses_with_timestamps`, dropping its oldest beyond the window. */
+  void record_pose();
 
   /** True if odometry initialization has been completed. */
   bool initialized_ = false;

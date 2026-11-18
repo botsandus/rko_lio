@@ -474,12 +474,48 @@ TEST_CASE("A scan that does not end after the previous one, or a fragment of a s
   REQUIRE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END)).empty());
 
   const Vector3sVector fragment(cloud.begin(), cloud.begin() + static_cast<std::ptrdiff_t>(cloud.size() / 20));
-  REQUIRE(lio.register_scan(fragment, linspace_timestamps(fragment.size(), FIRST_SCAN_END, FIRST_SCAN_END + 0.002))
-              .empty());
+  REQUIRE(
+      lio.register_scan(fragment, linspace_timestamps(fragment.size(), FIRST_SCAN_END + 0.098, FIRST_SCAN_END + 0.1))
+          .empty());
   REQUIRE(lio.poses_with_timestamps.size() == 1);
 
   REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), FIRST_SCAN_END, SECOND_SCAN_END)).empty());
   REQUIRE(lio.poses_with_timestamps.size() == 2);
+}
+
+TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped", "[register_scan]") {
+  LIO lio((LIO::Config{}));
+  const auto cloud = make_hollow_cube();
+  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+
+  REQUIRE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.009, FIRST_SCAN_END + 0.009)).empty());
+  REQUIRE(lio.poses_with_timestamps.size() == 1);
+
+  REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.011, FIRST_SCAN_END + 0.011)).empty());
+  REQUIRE(lio.poses_with_timestamps.size() == 2);
+}
+
+TEST_CASE("poses_with_timestamps keeps the last POSE_WINDOW_SIZE poses", "[register_scan]") {
+  LIO lio((LIO::Config{}));
+  const auto cloud = make_hollow_cube();
+  const std::size_t n_scans = LIO::POSE_WINDOW_SIZE + 5;
+  for (std::size_t i = 0; i < n_scans; ++i) {
+    const double scan_end = FIRST_SCAN_END + 0.1 * static_cast<double>(i);
+    lio.register_scan(cloud, linspace_timestamps(cloud.size(), scan_end - 0.1, scan_end));
+  }
+  REQUIRE(lio.poses_with_timestamps.size() == LIO::POSE_WINDOW_SIZE);
+  REQUIRE_THAT(to_seconds(lio.poses_with_timestamps.front().first), WithinAbs(FIRST_SCAN_END + 0.5, 1e-6));
+  REQUIRE_THAT(to_seconds(lio.poses_with_timestamps.back().first),
+               WithinAbs(FIRST_SCAN_END + 0.1 * static_cast<double>(n_scans - 1), 1e-6));
+}
+
+TEST_CASE("restart keeps the IMU bias estimates", "[register_scan]") {
+  LIO lio((LIO::Config{}));
+  lio.imu_bias.accelerometer = {0.1, -0.2, 0.3};
+  lio.imu_bias.gyroscope = {0.01, 0.02, -0.03};
+  lio.restart();
+  REQUIRE(lio.imu_bias.accelerometer == Eigen::Vector3s(0.1, -0.2, 0.3));
+  REQUIRE(lio.imu_bias.gyroscope == Eigen::Vector3s(0.01, 0.02, -0.03));
 }
 
 TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_scan]") {

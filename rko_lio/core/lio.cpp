@@ -49,6 +49,9 @@ using namespace rko_lio::core;
 constexpr Scalar NEGLIGIBLE_EXTRINSIC = 1e-6;
 constexpr auto EPSILON_TIME = std::chrono::nanoseconds(10);
 constexpr auto MAX_SCAN_TO_SCAN_DELTA = std::chrono::seconds(1);
+// 10% of a 10 Hz lidar's period: no lidar finishes a scan this soon after the last, so a closer end stamp is a stamp
+// error, and the velocity estimate (pose delta / dt) over it would turn ICP noise into a large velocity
+constexpr auto MIN_SCAN_TO_SCAN_DELTA = std::chrono::milliseconds(10);
 
 template <typename T>
 inline std::string streamed(const T& value) {
@@ -202,7 +205,7 @@ void LIO::initialize(const Nsec lidar_time) {
   if (interval_stats.imu_count == 0) {
     spdlog::warn("Cannot initialize. No imu measurements received.");
     // lidar_state.time has the time from the previous lidar, which we didn't log if init_phase was on
-    poses_with_timestamps.emplace_back(lidar_state.time, lidar_state.pose);
+    record_pose();
     initialized_ = true;
     return;
   }
@@ -217,7 +220,7 @@ void LIO::initialize(const Nsec lidar_time) {
   imu_state = lidar_state;
 
   // lidar_state.time has the time from the previous lidar, which we didn't log if init_phase was on
-  poses_with_timestamps.emplace_back(lidar_state.time, lidar_state.pose);
+  record_pose();
 
   // the pose for the current time gets logged at the end of register_scan in the typical fashion
   lidar_state.time = lidar_time;
@@ -240,7 +243,7 @@ Vector3sVector LIO::bootstrap_first_scan(const Vector3sVector& scan, const Nsec 
   auto preproc = preprocess_scan(scan, config);
   if (!config.initialization_phase) {
     map.update(config.double_downsample ? preproc.map_points : preproc.keypoints, lidar_state.pose);
-    poses_with_timestamps.emplace_back(lidar_state.time, lidar_state.pose);
+    record_pose();
     spdlog::info("Odometry map frame initialized with first lidar scan.");
   }
   return std::move(preproc.filtered_scan);
@@ -405,6 +408,11 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
   if (lidar_state.time < EPSILON_TIME) {
     return bootstrap_first_scan(scan, current_lidar_time);
   }
+  if (current_lidar_time - lidar_state.time < MIN_SCAN_TO_SCAN_DELTA) {
+    spdlog::warn("Dropping a LiDAR scan that ends {} ms after the previous one.",
+                 std::chrono::duration<double, std::milli>(current_lidar_time - lidar_state.time).count());
+    return {};
+  }
 
   if (std::chrono::abs(current_lidar_time - lidar_state.time) > MAX_SCAN_TO_SCAN_DELTA) {
     // the imu prior below extrapolates across the gap, and falls back to constant velocity if the imu dropped out too
@@ -472,7 +480,7 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
 
   map.update(map_input, lidar_state.pose);
 
-  poses_with_timestamps.emplace_back(lidar_state.time, lidar_state.pose);
+  record_pose();
 
   return std::move(preproc_result.filtered_scan);
 }
@@ -491,8 +499,14 @@ void LIO::restart() {
   map.clear();
   lidar_state = {};
   imu_state = {};
-  imu_bias = {};
   interval_stats.reset();
   initialized_ = false;
+}
+
+void LIO::record_pose() {
+  poses_with_timestamps.emplace_back(lidar_state.time, lidar_state.pose);
+  if (poses_with_timestamps.size() > POSE_WINDOW_SIZE) {
+    poses_with_timestamps.pop_front();
+  }
 }
 } // namespace rko_lio::core
