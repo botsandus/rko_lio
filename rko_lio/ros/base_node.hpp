@@ -29,6 +29,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -84,8 +85,9 @@ constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_n
 class BaseNode {
 public:
   // field order minimises padding
-  Sophus::SE3s extrinsic_imu2base;
-  Sophus::SE3s extrinsic_lidar2base;
+  // from tf on the first message, its header's frame to the base frame
+  std::optional<Sophus::SE3s> extrinsic_imu2base;
+  std::optional<Sophus::SE3s> extrinsic_lidar2base;
 
   std::unique_ptr<core::LIO> lio;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
@@ -102,10 +104,8 @@ public:
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr reset_count_publisher;
 
   std::string imu_topic;
-  std::string imu_frame; // default: get from the first imu message
   std::string lidar_topic;
   std::vector<std::string> lidar_topics; // set instead of lidar_topic: these lidars are merged into one scan
-  std::string lidar_frame;               // default: get from the first lidar message
   std::string base_frame;
   std::string odom_frame = "odom";
   std::string odom_topic = "rko_lio/odom";
@@ -120,7 +120,6 @@ public:
   bool publish_lidar_acceleration = false;
   bool publish_deskewed_scan = false;
   bool publish_local_map = false;
-  bool extrinsics_set = false;
   bool reset_on_registration_error = false;
 
   std::atomic<bool> atomic_node_running = true;
@@ -133,17 +132,13 @@ public:
   BaseNode() = delete;
   BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
 
-  void parse_cli_extrinsics();
   void require_single_lidar() const; // throws std::invalid_argument if lidar_topics is set
-  bool check_and_set_extrinsics();
-
-  // Parse the message's frame_id into target_frame on first sight, throw if neither header nor static extrinsics
-  // are usable, and report whether extrinsics are now set. Extrinsics are assumed static; if they change, switch
-  // to querying TF inline per-message.
-  bool ensure_frame_and_extrinsics(std::string& target_frame, const std::string& msg_frame, std::string_view kind);
+  // false until tf has the frame; throws std::invalid_argument for an empty frame
+  bool extrinsic_from_tf(std::optional<Sophus::SE3s>& extrinsic, const std::string& frame);
 
   // stamps the arrival first; throws core::InputError
-  LidarScan process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
+  LidarScan process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                              const Sophus::SE3s& lidar2base) const;
 
   std::vector<core::Vector3sVector> register_scan_locked(std::vector<core::Vector3sVector> scan,
                                                          const std::span<const core::Timestamps> timestamps,

@@ -69,7 +69,7 @@ ThreadedNode::ThreadedNode(const std::string& node_name, const rclcpp::NodeOptio
 }
 
 void ThreadedNode::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg) {
-  if (!ensure_frame_and_extrinsics(imu_frame, imu_msg->header.frame_id, "IMU")) {
+  if (!extrinsic_from_tf(extrinsic_imu2base, imu_msg->header.frame_id)) {
     return;
   }
   {
@@ -86,11 +86,11 @@ void ThreadedNode::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu
 }
 
 void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) {
-  if (!ensure_frame_and_extrinsics(lidar_frame, lidar_msg->header.frame_id, "LiDAR")) {
+  if (!extrinsic_from_tf(extrinsic_lidar2base, lidar_msg->header.frame_id)) {
     return;
   }
   try {
-    add_to_lidar_buffer(process_lidar_msg(lidar_msg));
+    add_to_lidar_buffer(process_lidar_msg(lidar_msg, *extrinsic_lidar2base));
   } catch (const core::InputError& ex) {
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
   }
@@ -99,19 +99,11 @@ void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstShar
 void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
                                         const std::size_t input) {
   MultiLidarInput& in = multi_lidar_inputs[input];
-  if (!in.lidar2base) {
-    in.lidar2base = utils::get_transform(tf_buffer, lidar_msg->header.frame_id, base_frame, 0s);
-    if (!in.lidar2base) {
-      return;
-    }
-    RCLCPP_INFO_STREAM(node->get_logger(), "Merging " << in.topic << " (frame " << lidar_msg->header.frame_id << ")");
-  }
-  if (!check_and_set_extrinsics()) { // the IMU's
+  if (!extrinsic_from_tf(in.lidar2base, lidar_msg->header.frame_id)) {
     return;
   }
   try {
-    LidarScan scan = process_lidar_msg(lidar_msg);
-    scan.lidar2base.front() = *in.lidar2base;
+    LidarScan scan = process_lidar_msg(lidar_msg, *in.lidar2base);
     if (!payload_anchor) {
       payload_anchor = PayloadAnchor{.end = scan.end(), .payload = 0};
     }
@@ -268,7 +260,7 @@ void ThreadedNode::registration_loop() {
     const core::Nsec end_stamp = scan.end();
     for (; !imu_buffer.empty() && imu_buffer.front().time < end_stamp; imu_buffer.pop()) {
       const core::ImuControl& imu_data = imu_buffer.front();
-      lio->add_imu_measurement(extrinsic_imu2base, imu_data);
+      lio->add_imu_measurement(*extrinsic_imu2base, imu_data);
     }
     // check if there are more messages buffered already
     atomic_can_process =

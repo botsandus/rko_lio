@@ -79,12 +79,12 @@ public:
   }
 
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg) {
-    if (!ensure_frame_and_extrinsics(imu_frame, imu_msg->header.frame_id, "IMU")) {
+    if (!extrinsic_from_tf(extrinsic_imu2base, imu_msg->header.frame_id)) {
       return;
     }
 
     const core::ImuControl imu_data = imu_msg_to_imu_data(*imu_msg);
-    lio->add_imu_measurement(extrinsic_imu2base, imu_data);
+    lio->add_imu_measurement(*extrinsic_imu2base, imu_data);
 
     if (!(lio->imu_state.time > core::Nsec{0})) {
       // Skip publishing before the first successful registration: until then,
@@ -99,12 +99,12 @@ public:
   }
 
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) {
-    if (!ensure_frame_and_extrinsics(lidar_frame, lidar_msg->header.frame_id, "LiDAR")) {
+    if (!extrinsic_from_tf(extrinsic_lidar2base, lidar_msg->header.frame_id)) {
       return;
     }
 
     try {
-      LidarScan scan = process_lidar_msg(lidar_msg);
+      LidarScan scan = process_lidar_msg(lidar_msg, *extrinsic_lidar2base);
       const std::vector<core::Vector3sVector> deskewed_scan =
           register_scan_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
       if (deskewed_scan.empty()) {

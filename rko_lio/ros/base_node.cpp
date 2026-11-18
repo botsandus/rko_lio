@@ -60,15 +60,6 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
         "Set exactly one of lidar_topic and lidar_topics (several lidars merged into one scan).");
   }
   base_frame = node->declare_parameter<std::string>("base_frame"); // required
-  imu_frame = node->declare_parameter<std::string>("imu_frame", imu_frame);
-  lidar_frame = node->declare_parameter<std::string>("lidar_frame", lidar_frame);
-  if (!lidar_topics.empty()) {
-    if (!lidar_frame.empty()) {
-      throw std::invalid_argument(
-          "lidar_frame is per lidar: with lidar_topics each lidar's frame comes from its scans.");
-    }
-    lidar_frame = base_frame; // each merged cloud carries its own lidar's extrinsic
-  }
   odom_frame = node->declare_parameter<std::string>("odom_frame", odom_frame);
   odom_topic = node->declare_parameter<std::string>("odom_topic", odom_topic);
 
@@ -149,15 +140,11 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   timestamp_proc_config.force_relative =
       node->declare_parameter<bool>("lidar_timestamps.force_relative", timestamp_proc_config.force_relative);
 
-  // manually, if, define extrinsics
-  parse_cli_extrinsics();
-
   RCLCPP_INFO_STREAM(node->get_logger(),
                      "Subscribed to IMU: "
-                         << imu_topic << (!imu_frame.empty() ? " (frame " + imu_frame + ")" : "") << " and LiDAR: "
+                         << imu_topic << " and LiDAR: "
                          << (lidar_topics.empty() ? lidar_topic
                                                   : "a merge of " + std::to_string(lidar_topics.size()) + " lidars")
-                         << (!lidar_frame.empty() ? " (frame " + lidar_frame + ")" : "")
                          << ". Max number of threads: " << lio_config.max_num_threads << ". "
                          << (publish_odom ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
                                           : std::string("Not publishing odometry"))
@@ -184,34 +171,6 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   RCLCPP_INFO(node->get_logger(), "RKO LIO Node is up!");
 }
 
-void BaseNode::parse_cli_extrinsics() {
-  const auto parse_extrinsic = [this](const std::string& name, Sophus::SE3s& extrinsic) {
-    const std::string param_name = "extrinsic_" + name + "2base_quat_xyzw_xyz";
-    const std::vector<double> vec = node->declare_parameter<std::vector<double>>(param_name, std::vector<double>{});
-    if (vec.empty()) {
-      return false;
-    }
-    try {
-      extrinsic = utils::to_se3(vec);
-    } catch (const core::InputError& error) {
-      throw core::InputError("Parameter '" + param_name + "' is invalid. " + error.what());
-    }
-    RCLCPP_INFO_STREAM(node->get_logger(), "Parsed " << name << " extrinsic as: " << extrinsic.log().transpose());
-    return true;
-  };
-  const bool imu_ok = parse_extrinsic("imu", extrinsic_imu2base);
-  const bool lidar_ok = parse_extrinsic("lidar", extrinsic_lidar2base);
-  if (!lidar_topics.empty()) {
-    if (lidar_ok) {
-      throw std::invalid_argument(
-          "extrinsic_lidar2base_quat_xyzw_xyz is per lidar: with lidar_topics each lidar's extrinsic comes from tf.");
-    }
-    extrinsics_set = imu_ok; // merging: each cloud's extrinsic comes from tf
-    return;
-  }
-  extrinsics_set = imu_ok && lidar_ok;
-}
-
 void BaseNode::require_single_lidar() const {
   if (!lidar_topics.empty()) {
     throw std::invalid_argument(
@@ -219,40 +178,22 @@ void BaseNode::require_single_lidar() const {
   }
 }
 
-bool BaseNode::ensure_frame_and_extrinsics(std::string& target_frame,
-                                           const std::string& msg_frame,
-                                           std::string_view kind) {
-  if (target_frame.empty()) {
-    if (msg_frame.empty() && !extrinsics_set) {
-      throw std::invalid_argument(std::string(kind) +
-                                  " message header has no frame id and we need it to query TF for the extrinsics. "
-                                  "Either specify the frame id or the extrinsic manually.");
+bool BaseNode::extrinsic_from_tf(std::optional<Sophus::SE3s>& extrinsic, const std::string& frame) {
+  if (!extrinsic) {
+    if (frame.empty()) {
+      throw std::invalid_argument("A message header has no frame id: its extrinsic comes from tf.");
     }
-    target_frame = msg_frame;
-    RCLCPP_INFO_STREAM(node->get_logger(), "Parsed the " << kind << " frame id as: " << target_frame);
+    extrinsic = utils::get_transform(tf_buffer, frame, base_frame, 0s);
+    if (extrinsic) {
+      RCLCPP_INFO_STREAM(node->get_logger(),
+                         "Extrinsic from " << frame << " to " << base_frame << ": " << extrinsic->log().transpose());
+    }
   }
-  return check_and_set_extrinsics();
+  return extrinsic.has_value();
 }
 
-bool BaseNode::check_and_set_extrinsics() {
-  if (extrinsics_set) {
-    return true;
-  }
-  const std::optional<Sophus::SE3s> imu_transform = utils::get_transform(tf_buffer, imu_frame, base_frame, 0s);
-  if (!imu_transform) {
-    return false;
-  }
-  const std::optional<Sophus::SE3s> lidar_transform = utils::get_transform(tf_buffer, lidar_frame, base_frame, 0s);
-  if (!lidar_transform) {
-    return false;
-  }
-  extrinsic_imu2base = imu_transform.value();
-  extrinsic_lidar2base = lidar_transform.value();
-  extrinsics_set = true;
-  return true;
-}
-
-LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const {
+LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                                      const Sophus::SE3s& lidar2base) const {
   const auto arrival = std::chrono::steady_clock::now();
   const core::Nsec arrival_node_clock = utils::to_ns(node->now());
   UTL_PROFILER_SCOPE("rko_lio: convert message");
@@ -269,7 +210,7 @@ LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Const
     scan.timestamps.push_back({.min = header_stamp, .max = header_stamp});
     scan.timestamps.front().per_point.assign(scan.points.front().size(), header_stamp);
   }
-  scan.lidar2base.push_back(extrinsic_lidar2base);
+  scan.lidar2base.push_back(lidar2base);
   scan.upstream = arrival_node_clock - scan.end();
   scan.ready = std::chrono::steady_clock::now();
   return scan;

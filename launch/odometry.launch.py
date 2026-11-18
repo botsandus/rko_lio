@@ -78,16 +78,6 @@ configurable_parameters = [
         "description": "[EXPERIMENTAL] Seconds to wait for the topics, messages and TF tree needed by autodetect (online mode only)",
     },
     {
-        "name": "imu_frame",
-        "default": "",
-        "description": "IMU frame, can be left empty if message frame id is to be used",
-    },
-    {
-        "name": "lidar_frame",
-        "default": "",
-        "description": "LiDAR frame, can be left empty if message frame id is to be used",
-    },
-    {
         "name": "base_frame",
         "default": "",
         "description": "Robot base frame, or the frame of estimation for odometry (required, unless it can be autodetected from the TF tree)",
@@ -439,19 +429,6 @@ def validate_parameters(merged: dict, mode: str, odom_at_imu_rate: bool, autodet
             "-> lidar_timestamps.force_absolute)."
         )
 
-    # Check extrinsics
-    extrinsic_params = [
-        "extrinsic_lidar2base_quat_xyzw_xyz",
-        "extrinsic_imu2base_quat_xyzw_xyz",
-    ]
-    extrinsic_set = [p in merged and merged[p] not in ("", None) for p in extrinsic_params]
-    if any(extrinsic_set) and not all(extrinsic_set):
-        fail(
-            "[ERROR] extrinsic parameters incomplete:",
-            "If one of {} is specified, both must be provided.".format(", ".join(extrinsic_params)),
-            "Please provide them via a config file. If you only need one, then explicitly set the other to identity.",
-        )
-
 
 def prepare_rviz_config(rviz_config_file: Path, parameters: dict) -> Path:
     """
@@ -541,7 +518,7 @@ def launch_setup(context, *args, **kwargs):
         print(
             f"Whatever you did not set is guessed from "
             f"{'the bag' if mode == 'offline' else 'the running graph'}: "
-            "imu_topic, lidar_topic, imu_frame, lidar_frame, base_frame."
+            "imu_topic, lidar_topic, base_frame."
         )
         print("Anything you did set is used as is. Turn this off with autodetect:=false.")
         print("=" * 40)
