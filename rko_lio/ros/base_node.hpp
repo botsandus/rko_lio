@@ -35,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 // ros
 #include <geometry_msgs/msg/accel_stamped.hpp>
 #include <geometry_msgs/msg/accel_with_covariance_stamped.hpp>
@@ -91,7 +92,8 @@ public:
   std::string imu_topic;
   std::string imu_frame; // default: get from the first imu message
   std::string lidar_topic;
-  std::string lidar_frame; // default: get from the first lidar message
+  std::vector<std::string> lidar_topics; // set instead of lidar_topic: these lidars are merged into one scan
+  std::string lidar_frame;               // default: get from the first lidar message
   std::string base_frame;
   std::string odom_frame = "odom";
   std::string odom_topic = "rko_lio/odom";
@@ -152,6 +154,7 @@ public:
   void publish_map_loop();
   void open_results(); // the results folder, its config.yaml and the two appended files, and their writer
   void write_results_loop(const std::stop_token& stop);
+  void stop_results_writer(); // writes what is pending; for exits that skip the destructors
 
   void reset_odometry();
 

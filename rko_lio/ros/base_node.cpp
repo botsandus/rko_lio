@@ -73,11 +73,19 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   logger->set_level(spdlog::level::trace);
   spdlog::set_default_logger(std::move(logger));
 
-  imu_topic = node->declare_parameter<std::string>("imu_topic");     // required
-  lidar_topic = node->declare_parameter<std::string>("lidar_topic"); // required
-  base_frame = node->declare_parameter<std::string>("base_frame");   // required
+  imu_topic = node->declare_parameter<std::string>("imu_topic"); // required
+  lidar_topic = node->declare_parameter<std::string>("lidar_topic", lidar_topic);
+  lidar_topics = node->declare_parameter<std::vector<std::string>>("lidar_topics", lidar_topics);
+  if (lidar_topic.empty() == lidar_topics.empty()) {
+    throw std::invalid_argument(
+        "Set exactly one of lidar_topic and lidar_topics (several lidars merged into one scan).");
+  }
+  base_frame = node->declare_parameter<std::string>("base_frame"); // required
   imu_frame = node->declare_parameter<std::string>("imu_frame", imu_frame);
   lidar_frame = node->declare_parameter<std::string>("lidar_frame", lidar_frame);
+  if (!lidar_topics.empty()) {
+    lidar_frame = base_frame; // the merged scan is in the base frame already: each lidar's extrinsic is applied first
+  }
   odom_frame = node->declare_parameter<std::string>("odom_frame", odom_frame);
   odom_topic = node->declare_parameter<std::string>("odom_topic", odom_topic);
 
@@ -409,6 +417,13 @@ void BaseNode::open_results() {
   results_write_thread = std::jthread([this](const std::stop_token& stop) { write_results_loop(stop); });
   RCLCPP_INFO_STREAM(node->get_logger(), "Writing the configuration, poses and scan statistics to "
                                              << output_dir.string() << ", every " << write_interval.count() << " s");
+}
+
+void BaseNode::stop_results_writer() {
+  if (results_write_thread.joinable()) {
+    results_write_thread.request_stop();
+    results_write_thread.join();
+  }
 }
 
 void BaseNode::write_results_loop(const std::stop_token& stop) {

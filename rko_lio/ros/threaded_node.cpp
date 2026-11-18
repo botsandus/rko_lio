@@ -27,9 +27,12 @@
 #include "rko_lio/ros/utils/utils.hpp"
 #include <UTL/profiler.hpp>
 // stl
+#include <algorithm>
 #include <array>
 #include <format>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -38,8 +41,15 @@ using namespace std::literals;
 // while no scan waits for them, the IMU buffer keeps this much before its newest sample
 constexpr rko_lio::core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
 
-constexpr std::array<std::string_view, 5> SCAN_STATUS_NAMES = {"ok", "skipped", "buffer_full", "input_error",
-                                                               "registration_error"};
+// Merging assumes phase-locked lidars: one revolution's scans end within MAX_PHASE_SPREAD of each other (measured
+// within 0.25 ms on a B18). A scan ending more than half a 10 Hz period after the open revolution belongs to the next
+// one.
+constexpr rko_lio::core::Nsec MAX_PHASE_SPREAD = 5ms;
+constexpr rko_lio::core::Nsec NEXT_REVOLUTION = 50ms;
+constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
+
+constexpr std::array<std::string_view, 6> SCAN_STATUS_NAMES = {
+    "ok", "skipped", "buffer_full", "input_error", "registration_error", "unsynced"};
 
 std::int64_t ns_between(const std::chrono::steady_clock::time_point from,
                         const std::chrono::steady_clock::time_point to) {
@@ -55,6 +65,9 @@ ThreadedNode::ThreadedNode(const std::string& node_name, const rclcpp::NodeOptio
       node->declare_parameter<int>("async.max_lidar_buffer_size", static_cast<int>(max_lidar_buffer_size)));
   if (node->declare_parameter<bool>("publish_metrics", false)) {
     scan_metrics_publisher = node->create_publisher<std_msgs::msg::Float64MultiArray>("rko_lio/scan_metrics", 100);
+  }
+  for (const std::string& topic : lidar_topics) {
+    merge_inputs.push_back({.topic = topic});
   }
   registration_thread = std::jthread([this] { registration_loop(); });
 }
@@ -86,26 +99,122 @@ void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstShar
     LidarScan scan = process_lidar_msg(lidar_msg);
     scan.arrival = arrival;
     scan.transport = arrival_node_clock - scan.timestamps.max;
-    std::optional<LidarScan> dropped;
-    {
-      const std::scoped_lock lock(buffer_mutex);
-      if (lidar_buffer.size() >= max_lidar_buffer_size) {
-        RCLCPP_WARN_STREAM(node->get_logger(),
-                           "Registration lidar buffer limit reached. Dropping oldest buffered frame.");
-        dropped = std::move(lidar_buffer.front());
-        lidar_buffer.pop();
-      }
-      lidar_buffer.push(std::move(scan));
-      atomic_can_process = !imu_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().timestamps.max;
+    enqueue_scan(std::move(scan));
+  } catch (const core::InputError& ex) {
+    RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
+  }
+}
+
+void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                                  const std::size_t input) {
+  const auto arrival = std::chrono::steady_clock::now();
+  const core::Nsec arrival_node_clock = utils::to_ns(node->now());
+  MergeInput& in = merge_inputs[input];
+  if (!in.lidar2base) {
+    in.lidar2base = utils::get_transform(tf_buffer, lidar_msg->header.frame_id, base_frame, 0s);
+    if (!in.lidar2base) {
+      return;
     }
-    if (atomic_can_process) {
-      sync_condition_variable.notify_one();
+    RCLCPP_INFO_STREAM(node->get_logger(), "Merging " << in.topic << " (frame " << lidar_msg->header.frame_id << ")");
+  }
+  if (!check_and_set_extrinsics()) { // the IMU's
+    return;
+  }
+  try {
+    LidarScan scan = process_lidar_msg(lidar_msg);
+    scan.arrival = arrival;
+    scan.transport = arrival_node_clock - scan.timestamps.max;
+    if (in.fragments.is_fragment(core::to_seconds<core::Scalar>(scan.timestamps.max - scan.timestamps.min),
+                                 static_cast<core::Scalar>(scan.points.size()))) {
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         "Dropping a LiDAR scan fragment of " << scan.points.size() << " points from " << in.topic);
+      record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.points.size()});
+      return;
     }
-    if (dropped) {
-      record_scan(*dropped, std::chrono::steady_clock::now(), ScanStatus::buffer_full, {});
+    for (Eigen::Vector3s& point : scan.points) {
+      point = *in.lidar2base * point;
+    }
+    const auto open = std::ranges::find_if(merge_inputs, [](const MergeInput& m) { return m.scan.has_value(); });
+    if (in.scan || (open != merge_inputs.end() &&
+                    std::chrono::abs(scan.timestamps.max - open->scan->timestamps.max) > NEXT_REVOLUTION)) {
+      merge_open_revolution(); // a lidar missed the open revolution: merge what came
+    }
+    in.scan = std::move(scan);
+    if (std::ranges::all_of(merge_inputs, [](const MergeInput& m) { return m.scan.has_value(); })) {
+      merge_open_revolution();
     }
   } catch (const core::InputError& ex) {
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
+  }
+}
+
+void ThreadedNode::merge_open_revolution() {
+  LidarScan merged{.timestamps = {.min = core::Nsec::max(), .max = core::Nsec::min()}};
+  core::Nsec first_end = core::Nsec::max();
+  core::Nsec last_end = core::Nsec::min();
+  core::Nsec last_arrival_node_clock = core::Nsec::min();
+  std::string missing;
+  for (MergeInput& m : merge_inputs) {
+    if (!m.scan) {
+      missing += " " + m.topic;
+      continue;
+    }
+    LidarScan& scan = *m.scan;
+    merged.timestamps.min = std::min(merged.timestamps.min, scan.timestamps.min);
+    merged.timestamps.max = std::max(merged.timestamps.max, scan.timestamps.max);
+    merged.timestamps.per_point.insert(merged.timestamps.per_point.end(), scan.timestamps.per_point.begin(),
+                                       scan.timestamps.per_point.end());
+    merged.points.insert(merged.points.end(), scan.points.begin(), scan.points.end());
+    merged.arrival = std::max(merged.arrival, scan.arrival);
+    first_end = std::min(first_end, scan.timestamps.max);
+    last_end = std::max(last_end, scan.timestamps.max);
+    last_arrival_node_clock = std::max(last_arrival_node_clock, scan.timestamps.max + scan.transport);
+    m.scan.reset();
+  }
+  merged.transport = last_arrival_node_clock - merged.timestamps.max;
+  if (last_end - first_end > MAX_PHASE_SPREAD) {
+    const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
+    const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_PHASE_SPREAD).count();
+    RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping unsynchronised lidar scans: their ends differ by "
+                                                << spread_ms << " ms, more than the " << max_spread_ms
+                                                << " ms of phase-locked lidars");
+    record_scan(merged, std::chrono::steady_clock::now(), ScanStatus::unsynced, {.input_points = merged.points.size()});
+    if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
+      RCLCPP_FATAL(
+          node->get_logger(),
+          "%d revolutions in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
+          "Exiting.",
+          consecutive_unsynced);
+      stop_results_writer();
+      throw std::runtime_error("lidar_topics: the lidars are not phase-locked");
+    }
+    return;
+  }
+  consecutive_unsynced = 0;
+  if (!missing.empty()) {
+    RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan this revolution from" << missing);
+  }
+  enqueue_scan(std::move(merged));
+}
+
+void ThreadedNode::enqueue_scan(LidarScan scan) {
+  std::optional<LidarScan> dropped;
+  {
+    const std::scoped_lock lock(buffer_mutex);
+    if (lidar_buffer.size() >= max_lidar_buffer_size) {
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         "Registration lidar buffer limit reached. Dropping oldest buffered frame.");
+      dropped = std::move(lidar_buffer.front());
+      lidar_buffer.pop();
+    }
+    lidar_buffer.push(std::move(scan));
+    atomic_can_process = !imu_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().timestamps.max;
+  }
+  if (atomic_can_process) {
+    sync_condition_variable.notify_one();
+  }
+  if (dropped) {
+    record_scan(*dropped, std::chrono::steady_clock::now(), ScanStatus::buffer_full, {});
   }
 }
 
@@ -150,10 +259,7 @@ void ThreadedNode::registration_loop() {
         reset_odometry();
       } else {
         RCLCPP_WARN(node->get_logger(), "Set reset_on_registration_error:=true to reset odometry and continue.");
-        if (results_write_thread.joinable()) { // the rethrow terminates without unwinding: write what is pending first
-          results_write_thread.request_stop();
-          results_write_thread.join();
-        }
+        stop_results_writer(); // the rethrow terminates without unwinding
         throw;
       }
     }

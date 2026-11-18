@@ -30,9 +30,11 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 // ros
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -41,8 +43,8 @@
 namespace rko_lio::ros {
 
 // What became of a scan: registered, skipped by the odometry (out of order, a fragment, or ending too soon after the
-// previous one), or dropped.
-enum class ScanStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error };
+// previous one), dropped, or (merging) one revolution whose lidars' scans did not end together.
+enum class ScanStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error, unsynced };
 
 class ThreadedNode : public BaseNode {
 public:
@@ -55,6 +57,18 @@ public:
   size_t max_lidar_buffer_size = 10;
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
+
+  // lidar_topics: per lidar, its scan of the open revolution in the base frame; when every lidar has one, they are
+  // concatenated with their own point times into one scan. Only the lidar callbacks touch them, on the one executor
+  // thread.
+  struct MergeInput {
+    std::string topic;
+    std::optional<Sophus::SE3s> lidar2base; // from tf on its first scan: the lidars are rigid
+    core::ScanFragmentCheck fragments;
+    std::optional<LidarScan> scan;
+  };
+  std::vector<MergeInput> merge_inputs;
+  int consecutive_unsynced = 0;
   // stops before BaseNode's results writer, which then writes what is left
   std::jthread registration_thread;
 
@@ -63,6 +77,9 @@ public:
 
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
+  void merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, std::size_t input);
+  void merge_open_revolution();
+  void enqueue_scan(LidarScan scan);
   void registration_loop();
 
   // A scan's row: its statistics (empty for one dropped from the buffer) and what became of it.
