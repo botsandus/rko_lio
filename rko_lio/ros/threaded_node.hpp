@@ -60,11 +60,7 @@ public:
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
 
-  // lidar_topics: each lidar's scans are grouped into merge payloads, one scan from each lidar. A scan's payload is the
-  // anchor's plus the distance of its end from the anchor's end in 10 Hz periods; the anchor moves to each scan that
-  // opens a newer payload, so the count does not drift. A payload's clouds stay one per lidar, each with its extrinsic.
-  // Only the lidar callbacks touch these; they share the node's default (mutually exclusive) callback group, so they
-  // never run at once.
+  // merge state: touched only by the lidar callbacks, which never run at once (one mutually exclusive callback group)
   struct MergeInput {
     std::string topic;
     std::optional<Sophus::SE3s> lidar2base; // from tf on its first scan: the lidars are rigid
