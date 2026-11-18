@@ -170,8 +170,8 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   reset_on_registration_error =
       node->declare_parameter<bool>("reset_on_registration_error", reset_on_registration_error);
   reset_service = node->create_service<std_srvs::srv::Trigger>(
-      "~/reset", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
-                        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+      "~/reset", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>&,
+                        const std::shared_ptr<std_srvs::srv::Trigger::Response>& response) {
         atomic_reset_requested = true;
         response->success = true;
         response->message = "The odometry resets before its next scan.";
@@ -209,6 +209,13 @@ void BaseNode::parse_cli_extrinsics() {
     return;
   }
   extrinsics_set = imu_ok && lidar_ok;
+}
+
+void BaseNode::require_single_lidar() const {
+  if (!lidar_topics.empty()) {
+    throw std::invalid_argument(
+        "lidar_topics (several lidars merged into one scan) is supported by the online node only.");
+  }
 }
 
 bool BaseNode::ensure_frame_and_extrinsics(std::string& target_frame,

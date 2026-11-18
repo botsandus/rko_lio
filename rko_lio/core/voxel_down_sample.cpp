@@ -34,7 +34,7 @@ namespace rko_lio::core {
 // https://github.com/PRBonn/kiss-icp/pull/347
 // although it does lead to worse odometry performance in certain situations
 
-std::vector<Eigen::Vector3s> voxel_down_sample(std::span<const Vector3sVector> clouds, const Scalar voxel_size) {
+std::vector<Eigen::Vector3s> voxel_down_sample(const std::span<const Vector3sVector> clouds, const Scalar voxel_size) {
   const auto inv_voxel_size = static_cast<Scalar>(1.0 / voxel_size);
   // the default allocator mallocs once per voxel, pmr cuts that to a handful of arena chunks
   std::pmr::monotonic_buffer_resource arena;

@@ -125,7 +125,8 @@ private:
   Scalar lowpass_point_count_ = 0;
 };
 
-/** What the odometry had for one scan: its points, the ICP's input and the ICP's last iteration. */
+/** One scan's statistics: its points and IMU samples, the ICP's input and last iteration, and the odometry's resets
+ *  so far. */
 struct ScanStats {
   std::size_t input_points = 0; // finite points in the scan
   std::size_t keypoints = 0;    // fed to the ICP

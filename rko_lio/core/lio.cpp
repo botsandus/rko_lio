@@ -138,10 +138,12 @@ LinearSystem build_icp_linear_system(const Sophus::SE3s& current_pose,
     throw RegistrationError("ICP found no correspondences");
   }
 
-  return {.H = H_icp / correspondences_counter,
-          .b = b_icp / correspondences_counter,
-          .cost = static_cast<Scalar>(0.5 * chi_icp / correspondences_counter),
-          .correspondences = correspondences_counter};
+  return {
+      .H = H_icp / correspondences_counter,
+      .b = b_icp / correspondences_counter,
+      .cost = static_cast<Scalar>(0.5 * chi_icp / correspondences_counter),
+      .correspondences = correspondences_counter,
+  };
 }
 
 struct IcpResult {
@@ -166,13 +168,15 @@ IcpResult icp(const Vector3sVector& keypoints,
     result.correspondences = correspondences;
     result.cost = chi;
 
-    Eigen::Vector6s dx = Eigen::Vector6s::Zero();
-    if (config.flat) {
+    const Eigen::Vector6s dx = std::invoke([&]() -> Eigen::Vector6s {
+      if (!config.flat) {
+        return H.ldlt().solve(-b);
+      }
       constexpr std::array<int, 3> x_y_yaw{0, 1, 5};
-      dx(x_y_yaw) = H(x_y_yaw, x_y_yaw).ldlt().solve(-b(x_y_yaw)).eval();
-    } else {
-      dx = H.ldlt().solve(-b);
-    }
+      Eigen::Vector6s flat_dx = Eigen::Vector6s::Zero();
+      flat_dx(x_y_yaw) = H(x_y_yaw, x_y_yaw).ldlt().solve(-b(x_y_yaw)).eval();
+      return flat_dx;
+    });
     current_pose = current_pose * Sophus::SE3s::exp(dx);
 
     // Ceres function_tolerance style convergence check
@@ -308,15 +312,17 @@ void LIO::add_imu_measurement(const ImuControl& base_imu) {
     return;
   }
 
-  Eigen::Vector3s unbiased_ang_vel = base_imu.angular_velocity - imu_bias.gyroscope;
+  const Eigen::Vector3s unbiased_ang_vel = std::invoke([&]() -> Eigen::Vector3s {
+    const Eigen::Vector3s unbiased = base_imu.angular_velocity - imu_bias.gyroscope;
+    return config.flat ? Eigen::Vector3s(0, 0, unbiased.z()) : unbiased;
+  });
   const Eigen::Vector3s unbiased_accel = base_imu.acceleration - imu_bias.accelerometer;
 
   const Eigen::Vector3s local_gravity = imu_state.pose.so3().inverse() * gravity();
-  Eigen::Vector3s compensated_accel = unbiased_accel + local_gravity;
-  if (config.flat) {
-    unbiased_ang_vel.head<2>().setZero();
-    compensated_accel.z() = 0;
-  }
+  const Eigen::Vector3s compensated_accel = std::invoke([&]() -> Eigen::Vector3s {
+    const Eigen::Vector3s compensated = unbiased_accel + local_gravity;
+    return config.flat ? Eigen::Vector3s(compensated.x(), compensated.y(), 0) : compensated;
+  });
 
   // imu state update
   Eigen::Vector6s tau;
@@ -441,10 +447,10 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
   } else {
     to_base_frame(scan, lidar2base);
   }
-  auto preproc_result = [&] {
+  auto preproc_result = std::invoke([&] {
     UTL_PROFILER_SCOPE("rko_lio: preprocess");
     return preprocess_scan(std::move(scan), config);
-  }();
+  });
   scan_stats.keypoints = preproc_result.keypoints.size();
 
   if (preproc_result.keypoints.size() < 10) {

@@ -113,8 +113,8 @@ public:
 
   std::mutex local_map_mutex;
 
-  bool publish_odom = true;    // false: the odometry and the reset count are not published
-  bool publish_odom_tf = true; // false: the odometry's tf is not broadcast
+  bool publish_odom = true;
+  bool publish_odom_tf = true;
   bool invert_odom_tf = false;
   bool publish_lidar_acceleration = false;
   bool publish_deskewed_scan = false;
@@ -132,6 +132,7 @@ public:
   BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
 
   void parse_cli_extrinsics();
+  void require_single_lidar() const; // throws std::invalid_argument if lidar_topics is set
   bool check_and_set_extrinsics();
 
   // Parse the message's frame_id into target_frame on first sight, throw if neither header nor static extrinsics
@@ -142,8 +143,8 @@ public:
   LidarScan process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
 
   std::vector<core::Vector3sVector> register_scan_locked(std::vector<core::Vector3sVector> scan,
-                                                         std::span<const core::Timestamps> timestamps,
-                                                         std::span<const Sophus::SE3s> lidar2base);
+                                                         const std::span<const core::Timestamps> timestamps,
+                                                         const std::span<const Sophus::SE3s> lidar2base);
 
   void publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const;
 

@@ -27,7 +27,6 @@
 #include "rko_lio/ros/utils/rosbag.hpp"
 #include "threaded_node.hpp"
 #include <spdlog/spdlog.h>
-#include <stdexcept>
 // other
 #include <std_msgs/msg/float32_multi_array.hpp>
 
@@ -56,10 +55,7 @@ public:
             tf2::durationFromSec(node->declare_parameter<double>("skip_first_seconds", 0.0)))),
         total_bag_msgs(static_cast<float>(bag->message_count())),
         bag_start_time(std::chrono::steady_clock::now()) {
-    if (!lidar_topics.empty()) {
-      throw std::invalid_argument(
-          "lidar_topics (several lidars merged into one scan) is supported by the online node only.");
-    }
+    require_single_lidar();
     bag_progress_publisher = node->create_publisher<std_msgs::msg::Float32MultiArray>("rko_lio/bag_progress", 10);
   }
 

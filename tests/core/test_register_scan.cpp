@@ -2,6 +2,7 @@
 #include "rko_lio/core/error.hpp"
 #include "rko_lio/core/lio.hpp"
 #include "synthetic_clouds.hpp"
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <random>
+#include <utility>
 
 using Catch::Matchers::WithinAbs;
 using rko_lio::core::GRAVITY_MAG;
@@ -17,6 +19,7 @@ using rko_lio::core::InputError;
 using rko_lio::core::LIO;
 using rko_lio::core::Nsec;
 using rko_lio::core::RegistrationError;
+using rko_lio::core::Scalar;
 using rko_lio::core::Timestamps;
 using rko_lio::core::TimestampVector;
 using rko_lio::core::to_seconds;
@@ -156,7 +159,7 @@ TEST_CASE("scan_stats: the scan's points, the ICP's input and last iteration, an
   REQUIRE(lio.scan_stats.icp_iterations >= 1);
   REQUIRE(lio.scan_stats.icp_iterations <= lio.config.max_iterations);
   REQUIRE(lio.scan_stats.correspondences > 0);
-  REQUIRE(static_cast<size_t>(lio.scan_stats.correspondences) <= lio.scan_stats.keypoints);
+  REQUIRE(std::cmp_less_equal(lio.scan_stats.correspondences, lio.scan_stats.keypoints));
   REQUIRE(lio.scan_stats.icp_cost < 1e-4); // the same cloud again: it aligns
 
   register_cloud(lio, cloud, instant_timestamps(cloud.size(), FIRST_SCAN_END)); // not after the previous scan: skipped
@@ -428,8 +431,10 @@ TEST_CASE("register_scan: each cloud's extrinsic brings it to the base frame", "
   config.deskew = GENERATE(false, true);
   LIO lio(config);
   const auto cube = make_hollow_cube();
-  const std::array<Sophus::SE3s, 2> lidar2base{Sophus::SE3s(Sophus::SO3s::rotZ(0.5), Eigen::Vector3s(0.6, 0.4, 0.3)),
-                                               Sophus::SE3s(Sophus::SO3s::rotX(-0.2), Eigen::Vector3s(0.6, -0.4, 0.3))};
+  const std::array<Sophus::SE3s, 2> lidar2base{
+      Sophus::SE3s(Sophus::SO3s::rotZ(0.5), Eigen::Vector3s(0.6, 0.4, 0.3)),
+      Sophus::SE3s(Sophus::SO3s::rotX(-0.2), Eigen::Vector3s(0.6, -0.4, 0.3)),
+  };
   std::vector<Vector3sVector> lidar_clouds;
   for (const Sophus::SE3s& mount : lidar2base) {
     Vector3sVector& lidar_cloud = lidar_clouds.emplace_back();
@@ -440,15 +445,16 @@ TEST_CASE("register_scan: each cloud's extrinsic brings it to the base frame", "
 
   // the first scan seeds the map without deskewing, the second one is registered
   for (const double scan_end : {FIRST_SCAN_END, SECOND_SCAN_END}) {
-    const std::array<Timestamps, 2> timestamps{instant_timestamps(cube.size(), scan_end),
-                                               instant_timestamps(cube.size(), scan_end)};
+    const std::array<Timestamps, 2> timestamps{
+        instant_timestamps(cube.size(), scan_end),
+        instant_timestamps(cube.size(), scan_end),
+    };
     const std::vector<Vector3sVector> base_clouds = lio.register_scan(lidar_clouds, timestamps, lidar2base);
     REQUIRE(base_clouds.size() == 2);
     for (const Vector3sVector& base_cloud : base_clouds) {
-      REQUIRE(base_cloud.size() == cube.size());
-      for (std::size_t i = 0; i < cube.size(); ++i) {
-        REQUIRE(approx_equal(base_cloud[i], cube[i], LOOSE_TOL));
-      }
+      REQUIRE(std::ranges::equal(base_cloud, cube, [](const Eigen::Vector3s& base_point, const Eigen::Vector3s& point) {
+        return approx_equal(base_point, point, LOOSE_TOL);
+      }));
     }
   }
 }
@@ -555,9 +561,10 @@ TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_sca
   const double yaw = 3.0 * M_PI / 180.0;
   const Eigen::Vector3s t(0.5, 0.3, 0.2);
   const Eigen::Vector3s imu_accel = 2.0 * t / (DT * DT) + Eigen::Vector3s{0.0, 0.0, GRAVITY_MAG};
-  feed_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10, imu_accel, Eigen::Vector3s(0.01, 0.02, yaw / DT));
+  feed_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10, imu_accel,
+           Eigen::Vector3s(0.01, 0.02, static_cast<Scalar>(yaw / DT)));
 
-  const Sophus::SE3s T_inv = Sophus::SE3s(Sophus::SO3s::rotZ(yaw), t).inverse();
+  const Sophus::SE3s T_inv = Sophus::SE3s(Sophus::SO3s::rotZ(static_cast<Scalar>(yaw)), t).inverse();
   Vector3sVector cloud2;
   cloud2.reserve(cloud.size());
   for (const auto& p : cloud) {

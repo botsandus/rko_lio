@@ -41,8 +41,8 @@ using namespace std::literals;
 // while no scan waits for them, the IMU buffer keeps this much before its newest sample
 constexpr rko_lio::core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
 
-// Merging assumes phase-locked lidars at 10 Hz: one merge payload's scans end within MAX_PHASE_SPREAD of each other
-// (measured within 0.3 ms on a B18), one LIDAR_PERIOD after the previous payload.
+// Merging assumes phase-locked lidars at 10 Hz: one merge payload's scans end within MAX_PHASE_SPREAD of each other,
+// one LIDAR_PERIOD after the previous payload.
 constexpr rko_lio::core::Nsec MAX_PHASE_SPREAD = 5ms;
 constexpr rko_lio::core::Nsec LIDAR_PERIOD = 100ms;
 constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
@@ -334,23 +334,25 @@ void ThreadedNode::record_scan(const LidarScan& scan,
   const std::int64_t process = ns_between(process_start, std::chrono::steady_clock::now());
   // scan_end_ns as a double is rounded to 256 ns; the other values are exact
   std_msgs::msg::Float64MultiArray msg;
-  msg.layout.dim.resize(1);
-  msg.layout.dim[0].label = std::string(SCAN_STATISTICS_FIELDS);
-  msg.data = {static_cast<double>(scan_end),
-              static_cast<double>(duration),
-              static_cast<double>(transport),
-              static_cast<double>(queue),
-              static_cast<double>(process),
-              static_cast<double>(status),
-              static_cast<double>(stats.input_points),
-              static_cast<double>(stats.keypoints),
-              static_cast<double>(stats.imu_samples),
-              static_cast<double>(stats.icp_iterations),
-              static_cast<double>(stats.correspondences),
-              static_cast<double>(stats.icp_cost),
-              static_cast<double>(stats.reset_count)};
-  msg.layout.dim[0].size = static_cast<std::uint32_t>(msg.data.size());
-  msg.layout.dim[0].stride = msg.layout.dim[0].size;
+  std_msgs::msg::MultiArrayDimension& fields = msg.layout.dim.emplace_back();
+  fields.label = std::string(SCAN_STATISTICS_FIELDS);
+  msg.data = {
+      static_cast<double>(scan_end),
+      static_cast<double>(duration),
+      static_cast<double>(transport),
+      static_cast<double>(queue),
+      static_cast<double>(process),
+      static_cast<double>(status),
+      static_cast<double>(stats.input_points),
+      static_cast<double>(stats.keypoints),
+      static_cast<double>(stats.imu_samples),
+      static_cast<double>(stats.icp_iterations),
+      static_cast<double>(stats.correspondences),
+      static_cast<double>(stats.icp_cost),
+      static_cast<double>(stats.reset_count),
+  };
+  fields.size = static_cast<std::uint32_t>(msg.data.size());
+  fields.stride = fields.size;
   scan_metrics_publisher->publish(msg);
 }
 

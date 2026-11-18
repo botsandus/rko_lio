@@ -33,7 +33,7 @@
 namespace {
 using namespace rko_lio::core;
 
-constexpr int CACHE_BITS = 12;
+constexpr unsigned CACHE_BITS = 12U;
 constexpr std::size_t CACHE_SIZE = std::size_t{1} << CACHE_BITS;
 
 struct CachedTransform {
@@ -78,11 +78,13 @@ void deskew_scan(Vector3sVector& scan,
     const Scalar one_minus_cos_theta = 1 - std::cos(theta);
     const Eigen::Vector3s mean_linear_velocity = motion.linear_velocity + motion.acceleration * dt / 2;
     const Eigen::Vector3s K_times_linear_velocity = axis.cross(mean_linear_velocity);
-    return AxisExp{.sin_theta = sin_theta,
-                   .one_minus_cos_theta = one_minus_cos_theta,
-                   .V_times_rho = dt * mean_linear_velocity +
-                                  (one_minus_cos_theta * inverse_angular_speed) * K_times_linear_velocity +
-                                  ((theta - sin_theta) * inverse_angular_speed) * axis.cross(K_times_linear_velocity)};
+    return AxisExp{
+        .sin_theta = sin_theta,
+        .one_minus_cos_theta = one_minus_cos_theta,
+        .V_times_rho = dt * mean_linear_velocity +
+                       (one_minus_cos_theta * inverse_angular_speed) * K_times_linear_velocity +
+                       ((theta - sin_theta) * inverse_angular_speed) * axis.cross(K_times_linear_velocity),
+    };
   };
   const auto reference_T_lidar_at = [&](const Nsec timestamp) {
     const AxisExp exp = exp_at(timestamp);
@@ -111,7 +113,7 @@ void deskew_scan(Vector3sVector& scan,
   auto timestamp = timestamps.per_point.cbegin();
   for (; point != scan.end() && misses < CACHE_SIZE; ++point, ++timestamp) {
     CachedTransform& entry =
-        cache[(static_cast<std::uint64_t>(timestamp->count()) * 0x9E3779B97F4A7C15ULL) >> (64 - CACHE_BITS)];
+        cache[(static_cast<std::uint64_t>(timestamp->count()) * 0x9E3779B97F4A7C15ULL) >> (64U - CACHE_BITS)];
     if (entry.stamp != *timestamp) {
       ++misses;
       entry = {.stamp = *timestamp, .reference_T_lidar = reference_T_lidar_at(*timestamp)};

@@ -25,8 +25,6 @@
 /**
  * @file profiler.hpp
  * @brief A scoped timer that prints how long its scope took.
- *
- * The scoped profiler is UTL's (UTL_PROFILER_SCOPE), compiled in with RKO_LIO_ENABLE_PROFILING.
  */
 #pragma once
 #include <chrono>

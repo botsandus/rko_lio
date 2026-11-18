@@ -44,8 +44,8 @@
 
 namespace rko_lio::ros {
 
-// What became of a scan: registered, skipped by the odometry (out of order, a fragment, or ending too soon after the
-// previous one), dropped, or (merging) one merge payload whose lidars' scans did not end together.
+// What became of a scan: registered, skipped (out of order, a fragment, or ending too soon after the previous one),
+// dropped, or (merging) one merge payload whose lidars' scans did not end together.
 enum class ScanStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error, unsynced };
 
 class ThreadedNode : public BaseNode {
@@ -92,7 +92,7 @@ public:
   // the scan of a lidar message, with its arrival and transport; throws core::InputError
   LidarScan receive_scan(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
-  void merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, std::size_t input);
+  void merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();
   void merge_payload(std::vector<PayloadSlot>& slots);
   void enqueue_scan(LidarScan scan);
@@ -100,8 +100,8 @@ public:
 
   // A scan's row: its statistics (empty for one dropped from the buffer) and what became of it.
   void record_scan(const LidarScan& scan,
-                   std::chrono::steady_clock::time_point process_start,
-                   ScanStatus status,
+                   const std::chrono::steady_clock::time_point process_start,
+                   const ScanStatus status,
                    const core::ScanStats& stats);
 
   ~ThreadedNode();

@@ -26,12 +26,12 @@
 
 #include <Eigen/Core>
 #include <cstdint>
-#include <span>
 #include <sophus/se3.hpp>
+#include <span>
 
 namespace rko_lio::core {
 /// Voxelize point clouds as one, in order, keeping the original coordinates
-std::vector<Eigen::Vector3s> voxel_down_sample(std::span<const Vector3sVector> clouds, const Scalar voxel_size);
+std::vector<Eigen::Vector3s> voxel_down_sample(const std::span<const Vector3sVector> clouds, const Scalar voxel_size);
 
 inline std::vector<Eigen::Vector3s> voxel_down_sample(const Vector3sVector& points, const Scalar voxel_size) {
   return voxel_down_sample(std::span(&points, 1), voxel_size);

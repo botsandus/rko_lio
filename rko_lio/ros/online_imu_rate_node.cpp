@@ -26,7 +26,6 @@
 #include "rko_lio/core/error.hpp"
 #include "rko_lio/core/profiler.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
-#include <stdexcept>
 
 namespace rko_lio::ros {
 namespace {
@@ -53,10 +52,7 @@ public:
 
   explicit OnlineImuRateNode(const rclcpp::NodeOptions& options)
       : BaseNode("rko_lio_online_imu_rate_node", options), timer("RKO LIO Online IMU-rate Node") {
-    if (!lidar_topics.empty()) {
-      throw std::invalid_argument(
-          "lidar_topics (several lidars merged into one scan) is supported by the online node only.");
-    }
+    require_single_lidar();
     odom_at_imu_rate_topic = node->declare_parameter<std::string>("seq.odom_at_imu_rate_topic", odom_at_imu_rate_topic);
     tf_at_imu_rate = node->declare_parameter<bool>("seq.tf_at_imu_rate", tf_at_imu_rate);
 
