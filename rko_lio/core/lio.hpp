@@ -173,8 +173,7 @@ private:
   /** True if odometry initialization has been completed. */
   bool initialized_ = false;
 
-  Scalar lowpass_scan_duration_ = 0;
-  Scalar lowpass_scan_point_count_ = 0;
+  ScanFragmentCheck fragment_check_;
 
   /** Timestamp of the most recent real IMU measurement. */
   Nsec last_real_imu_time_{0};

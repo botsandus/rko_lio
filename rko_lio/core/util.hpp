@@ -101,6 +101,30 @@ struct ImuControl {
   Eigen::Vector3s angular_velocity = Eigen::Vector3s::Zero();
 };
 
+/** Tells a driver's scan fragment (a frame closed early, its tail published on its own) from a full scan, by a running
+ *  average over the full scans of one lidar. */
+class ScanFragmentCheck {
+public:
+  /** True when both the scan's duration and its point count are below a quarter of the running averages; a full
+   *  scan updates them. */
+  bool is_fragment(const Scalar duration_s, const Scalar point_count) {
+    constexpr Scalar SCAN_FRAGMENT_FRACTION = 0.25;
+    constexpr Scalar LOWPASS_TIME_CONSTANT = 10;
+    if (duration_s < SCAN_FRAGMENT_FRACTION * lowpass_duration_ &&
+        point_count < SCAN_FRAGMENT_FRACTION * lowpass_point_count_) {
+      return true;
+    }
+    const Scalar alpha = lowpass_point_count_ > 0 ? 1 / LOWPASS_TIME_CONSTANT : 1;
+    lowpass_duration_ += alpha * (duration_s - lowpass_duration_);
+    lowpass_point_count_ += alpha * (point_count - lowpass_point_count_);
+    return false;
+  }
+
+private:
+  Scalar lowpass_duration_ = 0;
+  Scalar lowpass_point_count_ = 0;
+};
+
 /** What the odometry had for one scan: its points, the ICP's input and the ICP's last iteration. */
 struct ScanStats {
   std::size_t input_points = 0; // in the message, before range clipping
