@@ -105,7 +105,6 @@ public:
       const std::vector<core::Vector3sVector> deskewed_clouds =
           register_payload_locked(std::move(payload.clouds), payload.timestamps, payload.lidar2base);
       if (deskewed_clouds.empty()) {
-        // the first payload is skipped and returns nothing to publish
         return;
       }
       publish_tf(lio->lidar_state);

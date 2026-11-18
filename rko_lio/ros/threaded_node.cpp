@@ -279,7 +279,6 @@ void ThreadedNode::registration_loop() {
       const std::vector<core::Vector3sVector> deskewed_clouds =
           register_payload_locked(std::move(payload.clouds), payload.timestamps, payload.lidar2base);
       if (!deskewed_clouds.empty()) {
-        // TODO: first payload is skipped and an empty payload is returned. improve how we handle this
         publish_tf(lio->lidar_state);
         publish_lidar_outputs(deskewed_clouds);
       }
@@ -316,7 +315,6 @@ void ThreadedNode::publish_payload_metrics(const LidarPayload& payload,
   const std::int64_t convert_ns = ns_between(payload.arrival, payload.ready);
   const std::int64_t wait_ns = ns_between(payload.ready, registration_start);
   const std::int64_t registration_ns = ns_between(registration_start, std::chrono::steady_clock::now());
-  // end_ns as a double is rounded to 256 ns; the other values are exact
   std_msgs::msg::Float64MultiArray msg;
   std_msgs::msg::MultiArrayDimension& fields = msg.layout.dim.emplace_back();
   fields.label = std::string(PAYLOAD_METRICS_FIELDS);

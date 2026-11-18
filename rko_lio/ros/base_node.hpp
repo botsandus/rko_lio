@@ -57,8 +57,7 @@ namespace rko_lio::ros {
 struct LidarPayload {
   std::vector<core::Timestamps> timestamps; // per cloud, each with its own min/max
   std::vector<core::Vector3sVector> clouds;
-  // per cloud: from its lidar's frame, which its points are in, to the base frame
-  std::vector<Sophus::SE3s> lidar2base;
+  std::vector<Sophus::SE3s> lidar2base; // per cloud
   // node clock minus the payload end, on entering rko_lio's callback, or merging, at the merge
   core::Nsec upstream{0};
   // merging: arrival and ready of the scan that completes the payload
@@ -80,7 +79,7 @@ core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
 
 // payload_metrics layout label, times in ns: upstream = LidarPayload::upstream; convert = arrival to ready; wait =
 // ready to the registration start (an IMU sample past the payload end, or the previous payload); registration = start
-// to the pose
+// to the pose. end_ns as a double is rounded to 256 ns; the other values are exact
 constexpr std::string_view PAYLOAD_METRICS_FIELDS = "end_ns,duration_ns,upstream_ns,convert_ns,wait_ns,"
                                                     "registration_ns,"
                                                     "status,input_points,keypoints,imu_samples,icp_iterations,"

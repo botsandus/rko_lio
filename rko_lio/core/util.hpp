@@ -101,12 +101,12 @@ struct ImuControl {
   Eigen::Vector3s angular_velocity = Eigen::Vector3s::Zero();
 };
 
-/** Tells a driver's scan fragment (a frame closed early, its tail published on its own) from a full scan, by a running
- *  average over the full scans of one lidar. */
+/** Tells a driver's scan fragment (a frame closed early, its tail published on its own) from a full scan, by running
+ *  averages over the full ones. It is fed a lidar's scans (in the merge) or the registered payloads (in LIO). */
 class ScanFragmentCheck {
 public:
-  /** True when both the scan's duration and its point count are below a quarter of the running averages; a full
-   *  scan updates them. */
+  /** True when both the duration and the point count are below a fixed fraction of the running averages; a full one
+   *  updates them. */
   bool is_fragment(const Scalar duration_s, const Scalar point_count) {
     constexpr Scalar SCAN_FRAGMENT_FRACTION = 0.25;
     constexpr Scalar LOWPASS_TIME_CONSTANT = 10;
@@ -127,7 +127,7 @@ private:
 
 /** One payload's statistics: its points and IMU samples, the ICP's input and last iteration. */
 struct PayloadStats {
-  std::size_t input_points = 0; // finite points in the payload
+  std::size_t input_points = 0; // points in the payload as given
   std::size_t keypoints = 0;    // fed to the ICP
   int imu_samples = 0;          // since the previous payload
   std::size_t icp_iterations = 0;

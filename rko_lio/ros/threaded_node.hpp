@@ -44,8 +44,7 @@
 
 namespace rko_lio::ros {
 
-// What became of a payload: registered, skipped (a fragment, or ending too soon after the previous one), dropped, or
-// (merging) one whose lidars' scans did not end together.
+// skipped: a fragment, a payload ending too soon after the previous, or a merge scan that arrived late or twice
 enum class PayloadStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error, unsynced };
 
 class ThreadedNode : public BaseNode {
