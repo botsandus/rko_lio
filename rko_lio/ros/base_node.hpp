@@ -119,7 +119,8 @@ public:
   // results_dir/run_name_<index>: config.yaml at start; each registered pose (TUM) and, from a threaded node, each
   // scan's statistics (CSV) appended every write_interval and at exit
   bool dump_results = false;
-  bool publish_odom_and_tf = true; // false: the odometry, its tf and the reset count are not published
+  bool publish_odom = true;    // false: the odometry and the reset count are not published
+  bool publish_odom_tf = true; // false: the odometry's tf is not broadcast
   bool invert_odom_tf = false;
   bool publish_lidar_acceleration = false;
   bool publish_deskewed_scan = false;

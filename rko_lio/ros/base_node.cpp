@@ -104,9 +104,12 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
 
   // publishing
   const rclcpp::QoS publisher_qos(rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile());
-  publish_odom_and_tf = node->declare_parameter<bool>("publish_odom_and_tf", publish_odom_and_tf);
-  if (publish_odom_and_tf) {
+  publish_odom = node->declare_parameter<bool>("publish_odom", publish_odom);
+  publish_odom_tf = node->declare_parameter<bool>("publish_odom_tf", publish_odom_tf);
+  if (publish_odom_tf) {
     tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*node);
+  }
+  if (publish_odom) {
     odom_publisher = node->create_publisher<nav_msgs::msg::Odometry>(odom_topic, publisher_qos);
     reset_count_publisher = node->create_publisher<std_msgs::msg::UInt32>(
         "rko_lio/reset_count", rclcpp::SystemDefaultsQoS().keep_last(1).transient_local());
@@ -177,8 +180,9 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
                                                   : "a merge of " + std::to_string(lidar_topics.size()) + " lidars")
                          << (!lidar_frame.empty() ? " (frame " + lidar_frame + ")" : "")
                          << ". Max number of threads: " << lio_config.max_num_threads << ". "
-                         << (publish_odom_and_tf ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
-                                                 : std::string("Not publishing odometry"))
+                         << (publish_odom ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
+                                          : std::string("Not publishing odometry"))
+                         << (publish_odom_tf ? ", its tf" : ", no tf")
                          << " and acceleration "
                             "estimates to rko_lio/lidar_acceleration. Deskewing is "
                          << (lio->config.deskew ? "enabled" : "disabled") << "."
@@ -336,7 +340,7 @@ void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& de
 
 void BaseNode::publish_odometry(const core::State& state,
                                 const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr& publisher) const {
-  if (!publish_odom_and_tf) {
+  if (!publish_odom) {
     return;
   }
   nav_msgs::msg::Odometry odom_msg;
@@ -350,7 +354,7 @@ void BaseNode::publish_odometry(const core::State& state,
 }
 
 void BaseNode::publish_tf(const core::State& state) const {
-  if (!publish_odom_and_tf) {
+  if (!publish_odom_tf) {
     return;
   }
   geometry_msgs::msg::TransformStamped transform_msg;
@@ -403,7 +407,7 @@ void BaseNode::reset_odometry() {
   }
   lio->restart();
   RCLCPP_WARN_STREAM(node->get_logger(), "Odometry reset count: " << lio->reset_count);
-  if (publish_odom_and_tf) {
+  if (publish_odom) {
     std_msgs::msg::UInt32 reset_count_msg;
     reset_count_msg.data = static_cast<std::uint32_t>(lio->reset_count);
     reset_count_publisher->publish(reset_count_msg);
