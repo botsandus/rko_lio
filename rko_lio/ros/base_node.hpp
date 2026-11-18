@@ -28,8 +28,10 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -43,6 +45,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/u_int32.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 #include <tf2_ros/transform_listener.hpp>
@@ -57,6 +60,13 @@ struct LidarScan {
 };
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
+
+// A scan's statistics, as dump_results' CSV header and the published message's layout label. Times in ns: the scan's
+// last point (sensor clock) and duration; transport: its arrival on the node clock minus its last point; queue and
+// process: the steady clock from arrival to the start of its processing, and the processing.
+constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,transport_ns,queue_ns,process_ns,"
+                                                    "status,input_points,keypoints,imu_samples,icp_iterations,"
+                                                    "correspondences,icp_cost";
 
 class BaseNode {
 public:
@@ -92,6 +102,8 @@ public:
 
   std::mutex local_map_mutex;
 
+  // results_dir/run_name_<index>: config.yaml at start; each registered pose (TUM) and, from a threaded node, each
+  // scan's statistics (CSV) appended every write_interval and at exit
   bool dump_results = false;
   bool publish_odom_and_tf = true; // false: the odometry, its tf and the reset count are not published
   bool invert_odom_tf = false;
@@ -102,8 +114,19 @@ public:
   bool reset_on_registration_error = false;
 
   std::atomic<bool> atomic_node_running = true;
-  rclcpp::OnShutdownCallbackHandle shutdown_handle;
+  // ~/reset sets it; the next registration resets the odometry first, on the registration thread
+  std::atomic<bool> atomic_reset_requested = false;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service;
   std::jthread map_publish_thread;
+
+  std::chrono::seconds write_interval{10};
+  std::mutex results_mutex;
+  std::string pending_poses;
+  std::string pending_scans;
+  std::ofstream poses_file;
+  std::ofstream scans_file;
+  // last, so it stops first and writes what is pending
+  std::jthread results_write_thread;
 
   BaseNode() = delete;
   BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
@@ -127,7 +150,8 @@ public:
   void publish_tf(const core::State& state) const;
   void publish_lidar_accel(const core::State& state) const;
   void publish_map_loop();
-  void dump_results_to_disk(const std::filesystem::path& results_dir, const std::string& run_name) const;
+  void open_results(); // the results folder, its config.yaml and the two appended files, and their writer
+  void write_results_loop(const std::stop_token& stop);
 
   void reset_odometry();
 

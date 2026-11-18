@@ -279,12 +279,12 @@ configurable_parameters = [
         "name": "dump_results",
         "default": "false",
         "type": "bool",
-        "description": "Dump the odometry configuration and trajectory to a <results_dir>/<run_name> folder. The folder name includes an index that is incremented automatically to prevent accidental overwrites.",
+        "description": "Write the odometry configuration (at start), and its trajectory and per-scan statistics (appended every write_interval_s, and at exit) to a <results_dir>/<run_name>_<index> folder. The index is incremented automatically to prevent accidental overwrites.",
     },
     {
         "name": "results_dir",
         "default": "results",
-        "description": "When the odometry node exists, this is the folder used for dumping odometry configuration and trajectory up to that point. See `dump_results` which has to be true.",
+        "description": "The folder dump_results writes into. See `dump_results` which has to be true.",
     },
     {
         "name": "run_name",

@@ -47,6 +47,7 @@ else()
   find_package(ament_cmake REQUIRED)
   find_package(rclcpp REQUIRED CONFIG)
   find_package(std_msgs REQUIRED CONFIG)
+  find_package(std_srvs REQUIRED CONFIG)
   find_package(tf2 REQUIRED CONFIG)
   find_package(tf2_ros REQUIRED CONFIG)
   find_package(sensor_msgs REQUIRED CONFIG)
@@ -90,6 +91,7 @@ else()
       spdlog
       rclcpp
       std_msgs
+      std_srvs
       tf2
       tf2_ros
       sensor_msgs

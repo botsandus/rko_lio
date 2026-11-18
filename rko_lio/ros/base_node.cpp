@@ -26,7 +26,8 @@
 #include "rko_lio/ros/utils/spdlog_sink.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
 // other
-#include <fstream>
+#include <condition_variable>
+#include <format>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -120,7 +121,6 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
     publish_map_after =
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(publish_map_after_seconds));
     map_publisher = node->create_publisher<sensor_msgs::msg::PointCloud2>(map_topic, publisher_qos);
-    map_publish_thread = std::jthread([this] { publish_map_loop(); });
   }
 
   // lio params
@@ -173,18 +173,30 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
 
   reset_on_registration_error =
       node->declare_parameter<bool>("reset_on_registration_error", reset_on_registration_error);
+  reset_service = node->create_service<std_srvs::srv::Trigger>(
+      "~/reset", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        atomic_reset_requested = true;
+        response->success = true;
+        response->message = "The odometry resets before its next scan.";
+      });
 
   // disk logging
   dump_results = node->declare_parameter<bool>("dump_results", dump_results);
   results_dir = node->declare_parameter<std::string>("results_dir", results_dir);
   run_name = node->declare_parameter<std::string>("run_name", run_name);
-  shutdown_handle = node->get_node_base_interface()->get_context()->add_on_shutdown_callback([this] {
-    if (dump_results) {
-      // it is probably still a veery good idea to make dump_results_to_disk noexcept
-      dump_results_to_disk(results_dir, run_name);
+  if (dump_results) {
+    write_interval = std::chrono::seconds(
+        node->declare_parameter<int>("write_interval_s", static_cast<int>(write_interval.count())));
+    if (write_interval < 1s) {
+      throw std::invalid_argument("write_interval_s must be at least 1 s.");
     }
-  });
+    open_results();
+  }
 
+  if (publish_local_map) { // last: a throw above must not leave this thread running, and it reads lio
+    map_publish_thread = std::jthread([this] { publish_map_loop(); });
+  }
   RCLCPP_INFO(node->get_logger(), "RKO LIO Node is up!");
 }
 
@@ -260,11 +272,26 @@ LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Const
 }
 
 core::Vector3sVector BaseNode::register_scan_locked(core::Vector3sVector scan, const core::Timestamps& timestamps) {
+  if (atomic_reset_requested.exchange(false)) {
+    RCLCPP_WARN(node->get_logger(), "Odometry reset requested through the reset service.");
+    reset_odometry(); // takes local_map_mutex itself
+  }
   std::unique_lock lock(local_map_mutex, std::defer_lock);
   if (publish_local_map) {
     lock.lock(); // map publish thread may access map simultaneously
   }
-  return lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
+  core::Vector3sVector deskewed_scan = lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
+  if (dump_results) { // the poses leave the core's window only here, to the poses file
+    const std::scoped_lock results_lock(results_mutex);
+    for (const auto& [time, pose] : lio->poses_with_timestamps) {
+      const Eigen::Vector3s& t = pose.translation();
+      const Eigen::Quaternions& q = pose.so3().unit_quaternion();
+      pending_poses += std::format("{}.{:09} {} {} {} {} {} {} {}\n", time.count() / 1'000'000'000,
+                                   time.count() % 1'000'000'000, t.x(), t.y(), t.z(), q.x(), q.y(), q.z(), q.w());
+    }
+    lio->poses_with_timestamps.clear();
+  }
+  return deskewed_scan;
 }
 
 void BaseNode::publish_lidar_outputs(const core::Vector3sVector& deskewed_scan) const {
@@ -339,11 +366,7 @@ void BaseNode::publish_map_loop() {
   }
 }
 
-BaseNode::~BaseNode() {
-  atomic_node_running = false;
-  // The callback holds `this`; the context outlives the node.
-  node->get_node_base_interface()->get_context()->remove_on_shutdown_callback(shutdown_handle);
-}
+BaseNode::~BaseNode() { atomic_node_running = false; }
 
 void BaseNode::reset_odometry() {
   const bool forced_init_off = lio->config.initialization_phase;
@@ -364,40 +387,53 @@ void BaseNode::reset_odometry() {
   }
 }
 
-void BaseNode::dump_results_to_disk(const std::filesystem::path& results_dir, const std::string& run_name) const {
-  try {
-    std::filesystem::create_directories(results_dir); // no error if exists
-    int index = 0;
-    std::filesystem::path output_dir = results_dir / (run_name + "_" + std::to_string(index));
-    while (std::filesystem::exists(output_dir)) {
-      ++index;
-      output_dir = results_dir / (run_name + "_" + std::to_string(index));
+void BaseNode::open_results() {
+  std::filesystem::create_directories(results_dir);
+  int index = 0;
+  std::filesystem::path output_dir = std::filesystem::path(results_dir) / (run_name + "_" + std::to_string(index));
+  while (std::filesystem::exists(output_dir)) {
+    ++index;
+    output_dir = std::filesystem::path(results_dir) / (run_name + "_" + std::to_string(index));
+  }
+  std::filesystem::create_directory(output_dir);
+  std::ofstream config_file(output_dir / "config.yaml");
+  const std::filesystem::path poses_path = output_dir / (run_name + "_tum_" + std::to_string(index) + ".txt");
+  const std::filesystem::path scans_path = output_dir / (run_name + "_scans_" + std::to_string(index) + ".csv");
+  poses_file.open(poses_path, std::ios::app);
+  scans_file.open(scans_path, std::ios::app);
+  if (!(config_file << config_to_yaml(lio->config) << std::flush) || !poses_file ||
+      !(scans_file << SCAN_STATISTICS_FIELDS << "\n"
+                   << std::flush)) {
+    throw std::runtime_error("Cannot write the results files in " + output_dir.string());
+  }
+  results_write_thread = std::jthread([this](const std::stop_token& stop) { write_results_loop(stop); });
+  RCLCPP_INFO_STREAM(node->get_logger(), "Writing the configuration, poses and scan statistics to "
+                                             << output_dir.string() << ", every " << write_interval.count() << " s");
+}
+
+void BaseNode::write_results_loop(const std::stop_token& stop) {
+  std::condition_variable_any wakeup; // only the stop request wakes it early
+  bool failed = false;
+  while (true) {
+    std::string poses;
+    std::string scans;
+    {
+      std::unique_lock lock(results_mutex);
+      wakeup.wait_for(lock, stop, write_interval, [] { return false; });
+      poses.swap(pending_poses);
+      scans.swap(pending_scans);
     }
-    std::filesystem::create_directory(output_dir);
-    std::string tum_name = run_name + "_tum_" + std::to_string(index);
-    if (lio->reset_count > 0) {
-      tum_name += "_resets" + std::to_string(lio->reset_count);
-    }
-    const std::filesystem::path output_file = output_dir / (tum_name + ".txt");
-    // dump poses
-    if (std::ofstream file(output_file); file.is_open()) {
-      for (const auto& [timestamp, pose] : lio->poses_with_timestamps) {
-        const Eigen::Vector3s& translation = pose.translation();
-        const Eigen::Quaternions& quaternion = pose.so3().unit_quaternion();
-        file << std::fixed << std::setprecision(6) << core::to_seconds(timestamp) << " " << translation.x() << " "
-             << translation.y() << " " << translation.z() << " " << quaternion.x() << " " << quaternion.y() << " "
-             << quaternion.z() << " " << quaternion.w() << "\n";
+    if (!failed) {
+      poses_file << poses << std::flush;
+      scans_file << scans << std::flush;
+      failed = !poses_file || !scans_file;
+      if (failed) {
+        RCLCPP_ERROR(node->get_logger(), "Writing the results files failed; nothing more is written.");
       }
-      spdlog::info("Poses written to {}", std::filesystem::absolute(output_file).string());
     }
-    // dump config
-    const std::filesystem::path config_file = output_dir / "config.yaml";
-    if (std::ofstream file(config_file); file.is_open()) {
-      file << config_to_yaml(lio->config);
-      spdlog::info("Configuration written to {}", config_file.string());
+    if (stop.stop_requested()) {
+      return;
     }
-  } catch (const std::filesystem::filesystem_error& ex) {
-    spdlog::warn("Cannot write files to disk, encountered filesystem error: {}", ex.what());
   }
 }
 
