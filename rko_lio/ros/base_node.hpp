@@ -25,6 +25,7 @@
 #pragma once
 #include "rko_lio/core/lio.hpp"
 // stl
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -52,9 +53,9 @@
 
 namespace rko_lio::ros {
 
-// one scan: a cloud per lidar, several when merging
-struct LidarScan {
-  std::vector<core::Timestamps> timestamps; // per cloud; every entry carries the whole scan's min/max
+// one scan per lidar: one, or several when merging
+struct LidarPayload {
+  std::vector<core::Timestamps> timestamps; // per cloud, each with its own min/max
   std::vector<core::Vector3sVector> points;
   // per cloud: from its lidar's frame, which its points are in, to the base frame
   std::vector<Sophus::SE3s> lidar2base;
@@ -62,8 +63,8 @@ struct LidarScan {
   std::chrono::steady_clock::time_point arrival; // entering rko_lio's callback
   std::chrono::steady_clock::time_point ready;   // points converted from the message
 
-  core::Nsec start() const { return timestamps.front().min; }
-  core::Nsec end() const { return timestamps.front().max; }
+  core::Nsec start() const { return std::ranges::min(timestamps, {}, &core::Timestamps::min).min; }
+  core::Nsec end() const { return std::ranges::max(timestamps, {}, &core::Timestamps::max).max; }
   std::size_t point_count() const {
     std::size_t count = 0;
     for (const core::Vector3sVector& cloud : points) {
@@ -75,8 +76,8 @@ struct LidarScan {
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
 
-// scan_metrics layout label, times in ns: upstream = LidarScan::upstream; convert = arrival to ready; wait = ready to
-// the registration start (an IMU sample past the scan end, or the previous scan); registration = start to the pose
+// scan_metrics layout label, times in ns: upstream = LidarPayload::upstream; convert = arrival to ready; wait = ready
+// to the registration start (an IMU sample past the scan end, or the previous scan); registration = start to the pose
 constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,upstream_ns,convert_ns,wait_ns,"
                                                     "registration_ns,"
                                                     "status,input_points,keypoints,imu_samples,icp_iterations,"
@@ -137,12 +138,12 @@ public:
   bool extrinsic_from_tf(std::optional<Sophus::SE3s>& extrinsic, const std::string& frame);
 
   // stamps the arrival first; throws core::InputError
-  LidarScan process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
-                              const Sophus::SE3s& lidar2base) const;
+  LidarPayload process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                                 const Sophus::SE3s& lidar2base) const;
 
-  std::vector<core::Vector3sVector> register_scan_locked(std::vector<core::Vector3sVector> scan,
-                                                         const std::span<const core::Timestamps> timestamps,
-                                                         const std::span<const Sophus::SE3s> lidar2base);
+  std::vector<core::Vector3sVector> register_payload_locked(std::vector<core::Vector3sVector> scan,
+                                                            const std::span<const core::Timestamps> timestamps,
+                                                            const std::span<const Sophus::SE3s> lidar2base);
 
   void publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const;
 

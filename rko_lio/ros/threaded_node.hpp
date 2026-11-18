@@ -55,7 +55,7 @@ public:
   std::atomic<bool> atomic_can_process = false;
   std::atomic<bool> registration_busy{false};
   std::queue<core::ImuControl> imu_buffer;
-  std::queue<LidarScan> lidar_buffer;
+  std::queue<LidarPayload> lidar_buffer;
   size_t max_lidar_buffer_size = 10;
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
@@ -67,7 +67,7 @@ public:
     core::ScanFragmentCheck fragments;
   };
   struct PayloadSlot {
-    std::optional<LidarScan> scan;
+    std::optional<LidarPayload> scan;
     bool dropped = false; // its lidar's scan for this payload was a fragment
   };
   struct PayloadAnchor {
@@ -88,11 +88,11 @@ public:
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();
-  void add_to_lidar_buffer(LidarScan scan);
+  void add_to_lidar_buffer(LidarPayload scan);
   void registration_loop();
 
   // stats are empty for a scan dropped from the buffer
-  void publish_scan_metrics(const LidarScan& scan,
+  void publish_scan_metrics(const LidarPayload& scan,
                             const std::chrono::steady_clock::time_point registration_start,
                             const ScanStatus status,
                             const core::ScanStats& stats);

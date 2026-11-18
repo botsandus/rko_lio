@@ -84,7 +84,7 @@ Scalar max_relative_difference(const Vector3sVector& scan,
                  [&](const Eigen::Vector3s& point) { return Eigen::Vector3s(lidar2base * point); });
   const Vector3sVector expected = deskew_per_point(base_scan, timestamps, motion);
   Vector3sVector deskewed = scan;
-  deskew_scan(deskewed, timestamps, motion, lidar2base);
+  deskew_scan(deskewed, timestamps, timestamps.max, motion, lidar2base);
   Scalar max_difference = 0;
   for (std::size_t i = 0; i < scan.size(); ++i) {
     max_difference = std::max(max_difference, (deskewed[i] - expected[i]).norm() / std::max(scan[i].norm(), Scalar{1}));

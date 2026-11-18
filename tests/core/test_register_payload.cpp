@@ -113,7 +113,7 @@ constexpr double NOISY_ACCEL_STDDEV = 0.05; // m/s^2
 constexpr double NOISY_GYRO_STDDEV = 5e-3;  // rad/s
 } // namespace
 
-TEST_CASE("First scan: empty map -> populated, single pose at lidar_state.time", "[register_scan]") {
+TEST_CASE("First scan: empty map -> populated, single pose at lidar_state.time", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   const auto ts = linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END);
@@ -128,7 +128,7 @@ TEST_CASE("First scan: empty map -> populated, single pose at lidar_state.time",
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
 }
 
-TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[register_scan]") {
+TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -142,7 +142,7 @@ TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[regis
 }
 
 TEST_CASE("scan_stats: the scan's points, the ICP's input and last iteration, and the IMU samples it had",
-          "[register_scan]") {
+          "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -167,7 +167,7 @@ TEST_CASE("scan_stats: the scan's points, the ICP's input and last iteration, an
   REQUIRE(lio.scan_stats.icp_iterations == 0);
 }
 
-TEST_CASE("deskew = false: register_scan still produces a valid pose", "[register_scan]") {
+TEST_CASE("deskew = false: register_payload still produces a valid pose", "[register_payload]") {
   LIO::Config cfg{};
   cfg.deskew = false;
   LIO lio(cfg);
@@ -182,7 +182,7 @@ TEST_CASE("deskew = false: register_scan still produces a valid pose", "[registe
   REQUIRE(lio.lidar_state.pose.so3().log().norm() < 1e-3);
 }
 
-TEST_CASE("Pure translation: recover +1m in x", "[register_scan]") {
+TEST_CASE("Pure translation: recover +1m in x", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -207,7 +207,7 @@ TEST_CASE("Pure translation: recover +1m in x", "[register_scan]") {
   REQUIRE(pose.so3().log().norm() < 1e-3);
 }
 
-TEST_CASE("Pure rotation: recover 5 deg yaw", "[register_scan]") {
+TEST_CASE("Pure rotation: recover 5 deg yaw", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -232,7 +232,7 @@ TEST_CASE("Pure rotation: recover 5 deg yaw", "[register_scan]") {
   REQUIRE(pose.translation().norm() < 1e-3);
 }
 
-TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[register_scan]") {
+TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -260,7 +260,7 @@ TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[r
   REQUIRE(approx_equal(lio.lidar_state.pose, ground_truth, 1e-2));
 }
 
-TEST_CASE("Gap in the lidar stream: second scan has real per-point spread, not instant", "[register_scan]") {
+TEST_CASE("Gap in the lidar stream: second scan has real per-point spread, not instant", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube(2.0, 5.0);
 
@@ -295,7 +295,7 @@ TEST_CASE("Gap in the lidar stream: second scan has real per-point spread, not i
   REQUIRE(approx_equal(lio.lidar_state.pose, ground_truth, 1e-2));
 }
 
-TEST_CASE("Full SE(3): translation + rotation combined", "[register_scan]") {
+TEST_CASE("Full SE(3): translation + rotation combined", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -327,7 +327,7 @@ TEST_CASE("Full SE(3): translation + rotation combined", "[register_scan]") {
 // the report without breaking the suite -- drop the tag to make these strict.
 // ===========================================================================
 
-TEST_CASE("Noisy: pure translation +1m in x", "[register_scan][!mayfail]") {
+TEST_CASE("Noisy: pure translation +1m in x", "[register_payload][!mayfail]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -352,7 +352,7 @@ TEST_CASE("Noisy: pure translation +1m in x", "[register_scan][!mayfail]") {
   CHECK(pose.so3().log().norm() < 1e-3);
 }
 
-TEST_CASE("Noisy: pure rotation 5 deg yaw", "[register_scan][!mayfail]") {
+TEST_CASE("Noisy: pure rotation 5 deg yaw", "[register_payload][!mayfail]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -379,7 +379,7 @@ TEST_CASE("Noisy: pure rotation 5 deg yaw", "[register_scan][!mayfail]") {
   CHECK(pose.translation().norm() < 1e-3);
 }
 
-TEST_CASE("Noisy: full SE(3) translation + rotation", "[register_scan][!mayfail]") {
+TEST_CASE("Noisy: full SE(3) translation + rotation", "[register_payload][!mayfail]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
@@ -406,7 +406,7 @@ TEST_CASE("Noisy: full SE(3) translation + rotation", "[register_scan][!mayfail]
   CHECK(approx_equal(lio.lidar_state.pose, T_expected, 1e-2));
 }
 
-TEST_CASE("register_scan: timestamp count mismatch throws instead of UB", "[register_scan]") {
+TEST_CASE("register_payload: timestamp count mismatch throws instead of UB", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   REQUIRE_THROWS_AS(register_cloud(lio, cloud, Timestamps{}), InputError);
@@ -415,18 +415,18 @@ TEST_CASE("register_scan: timestamp count mismatch throws instead of UB", "[regi
   REQUIRE_THROWS_AS(register_cloud(lio, cloud, ts), InputError);
 }
 
-TEST_CASE("register_scan: a scan without one extrinsic per cloud throws, its own stats set", "[register_scan]") {
+TEST_CASE("register_payload: a scan without one extrinsic per cloud throws, its own stats set", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   const Vector3sVector part(cloud.begin(), cloud.begin() + 100);
   const std::array<Timestamps, 1> timestamps{linspace_timestamps(part.size(), FIRST_SCAN_END, SECOND_SCAN_END)};
-  REQUIRE_THROWS_AS(lio.register_scan(std::vector<Vector3sVector>{part}, timestamps, {}), InputError);
+  REQUIRE_THROWS_AS(lio.register_payload(std::vector<Vector3sVector>{part}, timestamps, {}), InputError);
   REQUIRE(lio.scan_stats.input_points == part.size());
 }
 
-TEST_CASE("register_scan: each cloud's extrinsic brings it to the base frame", "[register_scan]") {
+TEST_CASE("register_payload: each cloud's extrinsic brings it to the base frame", "[register_payload]") {
   LIO::Config config;
   config.deskew = GENERATE(false, true);
   LIO lio(config);
@@ -449,7 +449,7 @@ TEST_CASE("register_scan: each cloud's extrinsic brings it to the base frame", "
         instant_timestamps(cube.size(), scan_end),
         instant_timestamps(cube.size(), scan_end),
     };
-    const std::vector<Vector3sVector> base_clouds = lio.register_scan(lidar_clouds, timestamps, lidar2base);
+    const std::vector<Vector3sVector> base_clouds = lio.register_payload(lidar_clouds, timestamps, lidar2base);
     REQUIRE(base_clouds.size() == 2);
     for (const Vector3sVector& base_cloud : base_clouds) {
       REQUIRE(std::ranges::equal(base_cloud, cube, [](const Eigen::Vector3s& base_point, const Eigen::Vector3s& point) {
@@ -459,7 +459,7 @@ TEST_CASE("register_scan: each cloud's extrinsic brings it to the base frame", "
   }
 }
 
-TEST_CASE("register_scan: zero correspondences throws RegistrationError", "[register_scan]") {
+TEST_CASE("register_payload: zero correspondences throws RegistrationError", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
@@ -477,7 +477,7 @@ TEST_CASE("register_scan: zero correspondences throws RegistrationError", "[regi
   REQUIRE(lio.lidar_state.time == time_before);
 }
 
-TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan", "[register_scan]") {
+TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan", "[register_payload]") {
   LIO::Config cfg{};
   cfg.initialization_phase = true;
   LIO lio(cfg);
@@ -511,7 +511,8 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
 }
 
-TEST_CASE("A scan that does not end after the previous one, or a fragment of a scan, is dropped", "[register_scan]") {
+TEST_CASE("A scan that does not end after the previous one, or a fragment of a scan, is dropped",
+          "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
@@ -529,7 +530,7 @@ TEST_CASE("A scan that does not end after the previous one, or a fragment of a s
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
 }
 
-TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped", "[register_scan]") {
+TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped", "[register_payload]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
@@ -541,7 +542,7 @@ TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped"
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END + 0.011, 1e-9));
 }
 
-TEST_CASE("restart keeps the IMU bias estimates", "[register_scan]") {
+TEST_CASE("restart keeps the IMU bias estimates", "[register_payload]") {
   LIO lio((LIO::Config{}));
   lio.imu_bias.accelerometer = {0.1, -0.2, 0.3};
   lio.imu_bias.gyroscope = {0.01, 0.02, -0.03};
@@ -550,7 +551,7 @@ TEST_CASE("restart keeps the IMU bias estimates", "[register_scan]") {
   REQUIRE(lio.imu_bias.gyroscope == Eigen::Vector3s(0.01, 0.02, -0.03));
 }
 
-TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_scan]") {
+TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_payload]") {
   LIO::Config config;
   config.flat = true;
   LIO lio(config);
@@ -575,7 +576,8 @@ TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_sca
       approx_equal(lio.lidar_state.pose, Sophus::SE3s(Sophus::SO3s::rotZ(yaw), Eigen::Vector3s(0.5, 0.3, 0.0)), 1e-2));
 }
 
-TEST_CASE("flat: the tilt from initialization_phase compensates gravity and stays out of the pose", "[register_scan]") {
+TEST_CASE("flat: the tilt from initialization_phase compensates gravity and stays out of the pose",
+          "[register_payload]") {
   LIO::Config config;
   config.flat = true;
   config.initialization_phase = true;

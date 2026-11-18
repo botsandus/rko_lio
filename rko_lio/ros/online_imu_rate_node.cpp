@@ -31,7 +31,7 @@ namespace {
 
 // Sequential variant of the LIO node: IMU and LiDAR are processed inline on
 // the rclcpp executor thread. The IMU callback feeds add_imu_measurement and
-// publishes IMU-rate odometry; the LiDAR callback runs register_scan inline
+// publishes IMU-rate odometry; the LiDAR callback runs register_payload inline
 // and publishes the lidar-rate odometry, deskewed scan, and TF (by default).
 class OnlineImuRateNode : public BaseNode {
 public:
@@ -101,9 +101,9 @@ public:
     }
 
     try {
-      LidarScan scan = process_lidar_msg(lidar_msg, *extrinsic_lidar2base);
+      LidarPayload scan = process_lidar_msg(lidar_msg, *extrinsic_lidar2base);
       const std::vector<core::Vector3sVector> deskewed_scan =
-          register_scan_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
+          register_payload_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
       if (deskewed_scan.empty()) {
         // first scan is skipped and an empty scan is returned. nothing to publish.
         return;

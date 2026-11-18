@@ -235,8 +235,8 @@ TEST_CASE("Constant body acceleration: position grows as 0.5 * a * t^2", "[imu_i
   REQUIRE(std::abs(lio.imu_state.linear_velocity.z()) < TOL);
 }
 
-TEST_CASE("register_scan resets imu_state to optimized pose", "[imu_integration]") {
-  // Mirrors the "Identity registration" test in test_register_scan.cpp: register the
+TEST_CASE("register_payload resets imu_state to optimized pose", "[imu_integration]") {
+  // Mirrors the "Identity registration" test in test_register_payload.cpp: register the
   // same hollow-cube cloud twice with a static IMU between them, then assert that
   // imu_state was re-anchored to lidar_state at scan end.
   LIO lio((LIO::Config{}));

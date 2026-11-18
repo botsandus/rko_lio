@@ -103,7 +103,7 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
     return;
   }
   try {
-    LidarScan scan = process_lidar_msg(lidar_msg, *in.lidar2base);
+    LidarPayload scan = process_lidar_msg(lidar_msg, *in.lidar2base);
     if (!payload_anchor) {
       payload_anchor = PayloadAnchor{.end = scan.end(), .payload = 0};
     }
@@ -166,8 +166,7 @@ void ThreadedNode::merge_ready_payloads() {
     std::vector<PayloadSlot> slots = std::move(oldest->second);
     open_payloads.erase(oldest);
     UTL_PROFILER_SCOPE("rko_lio: merge payload");
-    LidarScan merged;
-    core::Nsec start = core::Nsec::max();
+    LidarPayload merged;
     core::Nsec first_end = core::Nsec::max();
     core::Nsec last_end = core::Nsec::min();
     std::string missing;
@@ -179,8 +178,7 @@ void ThreadedNode::merge_ready_payloads() {
         }
         continue;
       }
-      LidarScan& scan = *slot.scan;
-      start = std::min(start, scan.start());
+      LidarPayload& scan = *slot.scan;
       first_end = std::min(first_end, scan.end());
       last_end = std::max(last_end, scan.end());
       merged.timestamps.push_back(std::move(scan.timestamps.front()));
@@ -189,10 +187,6 @@ void ThreadedNode::merge_ready_payloads() {
     }
     if (merged.points.empty()) {
       continue;
-    }
-    for (core::Timestamps& timestamps : merged.timestamps) {
-      timestamps.min = start;
-      timestamps.max = last_end;
     }
     // upstream includes the wait for the last lidar
     merged.arrival = merged.ready = std::chrono::steady_clock::now();
@@ -223,8 +217,8 @@ void ThreadedNode::merge_ready_payloads() {
   }
 }
 
-void ThreadedNode::add_to_lidar_buffer(LidarScan scan) {
-  std::optional<LidarScan> dropped;
+void ThreadedNode::add_to_lidar_buffer(LidarPayload scan) {
+  std::optional<LidarPayload> dropped;
   {
     const std::scoped_lock lock(buffer_mutex);
     if (lidar_buffer.size() >= max_lidar_buffer_size) {
@@ -253,7 +247,7 @@ void ThreadedNode::registration_loop() {
       // node could have been killed after waiting on the cv
       break;
     }
-    LidarScan scan = std::move(lidar_buffer.front());
+    LidarPayload scan = std::move(lidar_buffer.front());
     lidar_buffer.pop();
     const auto registration_start = std::chrono::steady_clock::now();
     registration_busy = true;
@@ -269,7 +263,7 @@ void ThreadedNode::registration_loop() {
 
     try {
       const std::vector<core::Vector3sVector> deskewed_scan =
-          register_scan_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
+          register_payload_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
       if (!deskewed_scan.empty()) {
         // TODO: first scan is skipped and an empty scan is returned. improve how we handle this
         publish_tf(lio->lidar_state);
@@ -295,7 +289,7 @@ void ThreadedNode::registration_loop() {
   atomic_node_running = false;
 }
 
-void ThreadedNode::publish_scan_metrics(const LidarScan& scan,
+void ThreadedNode::publish_scan_metrics(const LidarPayload& scan,
                                         const std::chrono::steady_clock::time_point registration_start,
                                         const ScanStatus status,
                                         const core::ScanStats& stats) {

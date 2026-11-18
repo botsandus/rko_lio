@@ -29,7 +29,7 @@ inline std::vector<Eigen::Vector3s> make_hollow_cube(double spacing = 0.5, doubl
   return points;
 }
 
-// register_scan of one cloud already in the base frame
+// register_payload of one cloud already in the base frame
 inline rko_lio::core::Vector3sVector register_cloud(rko_lio::core::LIO& lio,
                                                     rko_lio::core::Vector3sVector cloud,
                                                     const rko_lio::core::Timestamps& timestamps) {
@@ -37,7 +37,7 @@ inline rko_lio::core::Vector3sVector register_cloud(rko_lio::core::LIO& lio,
   scan.push_back(std::move(cloud));
   const std::array<Sophus::SE3s, 1> identity{};
   std::vector<rko_lio::core::Vector3sVector> registered =
-      lio.register_scan(std::move(scan), std::span(&timestamps, 1), identity);
+      lio.register_payload(std::move(scan), std::span(&timestamps, 1), identity);
   return registered.empty() ? rko_lio::core::Vector3sVector{} : std::move(registered.front());
 }
 

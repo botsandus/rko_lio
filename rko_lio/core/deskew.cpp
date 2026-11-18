@@ -56,9 +56,10 @@ struct AxisExp {
 namespace rko_lio::core {
 void deskew_scan(Vector3sVector& scan,
                  const Timestamps& timestamps,
+                 const Nsec reference_time,
                  const MotionPrior& motion,
                  const Sophus::SE3s& lidar2base) {
-  const Sophus::SE3s start2reference = relative_pose_at_time(motion, timestamps.max).inverse();
+  const Sophus::SE3s start2reference = relative_pose_at_time(motion, reference_time).inverse();
   const Eigen::Matrix3s start2reference_rotation = start2reference.so3().matrix();
   const Eigen::Vector3s& start2reference_translation = start2reference.translation();
   const Eigen::Matrix3s lidar2base_rotation = lidar2base.so3().matrix();

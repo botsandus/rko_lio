@@ -192,13 +192,13 @@ bool BaseNode::extrinsic_from_tf(std::optional<Sophus::SE3s>& extrinsic, const s
   return extrinsic.has_value();
 }
 
-LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
-                                      const Sophus::SE3s& lidar2base) const {
+LidarPayload BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                                         const Sophus::SE3s& lidar2base) const {
   const auto arrival = std::chrono::steady_clock::now();
   const core::Nsec arrival_node_clock = utils::to_ns(node->now());
   UTL_PROFILER_SCOPE("rko_lio: convert message");
   const core::Nsec header_stamp = utils::to_ns(lidar_msg->header.stamp);
-  LidarScan scan{.arrival = arrival};
+  LidarPayload scan{.arrival = arrival};
   if (lio->config.deskew) {
     utils::RawScan raw = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
     scan.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
@@ -216,9 +216,9 @@ LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Const
   return scan;
 }
 
-std::vector<core::Vector3sVector> BaseNode::register_scan_locked(std::vector<core::Vector3sVector> scan,
-                                                                 const std::span<const core::Timestamps> timestamps,
-                                                                 const std::span<const Sophus::SE3s> lidar2base) {
+std::vector<core::Vector3sVector> BaseNode::register_payload_locked(std::vector<core::Vector3sVector> scan,
+                                                                    const std::span<const core::Timestamps> timestamps,
+                                                                    const std::span<const Sophus::SE3s> lidar2base) {
   if (atomic_reset_requested.exchange(false)) {
     RCLCPP_WARN(node->get_logger(), "Odometry reset requested through the reset service.");
     reset_odometry(); // takes local_map_mutex itself
@@ -227,7 +227,7 @@ std::vector<core::Vector3sVector> BaseNode::register_scan_locked(std::vector<cor
   if (publish_local_map) {
     lock.lock(); // map publish thread may access map simultaneously
   }
-  return lio->register_scan(std::move(scan), timestamps, lidar2base);
+  return lio->register_payload(std::move(scan), timestamps, lidar2base);
 }
 
 void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const {

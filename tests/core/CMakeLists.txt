@@ -9,7 +9,7 @@ compat_target_sources(
           test_preprocess_scan.cpp
           test_thread_arena.cpp
           test_imu_integration.cpp
-          test_register_scan.cpp
+          test_register_payload.cpp
           test_deskew.cpp
   PUBLIC
   FILE_SET

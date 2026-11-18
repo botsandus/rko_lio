@@ -385,14 +385,14 @@ void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuC
 
 // ============================ lidar ===============================
 
-std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
-                                               const std::span<const Timestamps> timestamps,
-                                               const std::span<const Sophus::SE3s> lidar2base) {
+std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> scan,
+                                                  const std::span<const Timestamps> timestamps,
+                                                  const std::span<const Sophus::SE3s> lidar2base) {
   const std::size_t point_count = std::transform_reduce(scan.cbegin(), scan.cend(), std::size_t{0}, std::plus<>(),
                                                         [](const Vector3sVector& cloud) { return cloud.size(); });
   scan_stats = {.input_points = point_count, .imu_samples = interval_stats.imu_count};
   if (scan.empty() || scan.size() != timestamps.size() || scan.size() != lidar2base.size()) {
-    throw InputError("LiDAR scan of " + std::to_string(scan.size()) + " clouds has " +
+    throw InputError("LiDAR payload of " + std::to_string(scan.size()) + " clouds has " +
                      std::to_string(timestamps.size()) + " timestamp entries and " + std::to_string(lidar2base.size()) +
                      " extrinsics; it needs one of each per cloud.");
   }
@@ -401,12 +401,9 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
       throw InputError("LiDAR timestamps size (" + std::to_string(timestamps[cloud].per_point.size()) +
                        ") does not match scan (" + std::to_string(scan[cloud].size()) + ").");
     }
-    if (timestamps[cloud].min != timestamps.front().min || timestamps[cloud].max != timestamps.front().max) {
-      throw InputError("The clouds of one LiDAR scan disagree on its first or last timestamp.");
-    }
   }
-  const Nsec scan_start = timestamps.front().min;
-  const Nsec current_lidar_time = timestamps.front().max;
+  const Nsec scan_start = std::ranges::min(timestamps, {}, &Timestamps::min).min;
+  const Nsec current_lidar_time = std::ranges::max(timestamps, {}, &Timestamps::max).max;
   if (lidar_state.time >= EPSILON_TIME && current_lidar_time - lidar_state.time < MIN_SCAN_TO_SCAN_DELTA) {
     spdlog::warn("Dropping a LiDAR scan that ends {} ms after the previous one.",
                  std::chrono::duration<double, std::milli>(current_lidar_time - lidar_state.time).count());
@@ -442,7 +439,7 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
         .angular_velocity = motion.angular_velocity,
     };
     for (std::size_t cloud = 0; cloud < scan.size(); ++cloud) {
-      deskew_scan(scan[cloud], timestamps[cloud], scan_motion, lidar2base[cloud]);
+      deskew_scan(scan[cloud], timestamps[cloud], current_lidar_time, scan_motion, lidar2base[cloud]);
     }
   } else {
     to_base_frame(scan, lidar2base);
