@@ -25,43 +25,22 @@
 #include "deskew.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <sophus/se3.hpp>
+#include <tsl/robin_map.h>
 
 namespace rko_lio::core {
 void deskew_scan(Vector3sVector& scan, const Timestamps& timestamps, const MotionPrior& motion) {
   const Sophus::SE3s start2reference = relative_pose_at_time(motion, timestamps.max).inverse();
-  const Eigen::Matrix3s& start2reference_rotation = start2reference.so3().matrix();
-  const Eigen::Vector3s& start2reference_translation = start2reference.translation();
-
-  // to avoid numerical issues
-  const Scalar angular_speed = std::max(motion.angular_velocity.norm(), static_cast<Scalar>(1e-6));
-  const Scalar inverse_angular_speed = 1 / angular_speed;
-  const Eigen::Vector3s axis = motion.angular_velocity * inverse_angular_speed;
-
+  // keyed by the stamp in ns; prime bucket counts, so regularly spaced stamps spread over the buckets
+  tsl::robin_pg_map<Nsec::rep, Eigen::Matrix<Scalar, 3, 4>> reference_T_stamp;
   std::transform(scan.cbegin(), scan.cend(), timestamps.per_point.cbegin(), scan.begin(),
                  [&](const Eigen::Vector3s& point, const Nsec timestamp) {
-                   const auto dt = to_seconds<Scalar>(timestamp - motion.start_time);
-                   const Scalar theta = angular_speed * dt;
-                   const Scalar sin_theta = std::sin(theta);
-                   const Scalar one_minus_cos_theta = 1 - std::cos(theta);
-                   const Eigen::Vector3s mean_linear_velocity = motion.linear_velocity + motion.acceleration * dt / 2;
-                   const Eigen::Vector3s K_times_p = axis.cross(point);
-                   const Eigen::Vector3s K_times_linear_velocity = axis.cross(mean_linear_velocity);
-                   // SE(3) exp about a fixed axis, applied to the point: R * p + V * rho
-                   // Rodrigues -> K = hat(axis), R = I + sin(theta) K + (1 - cos theta) K^2
-                   // left Jacobian -> V = I + ((1 - cos theta) / theta) K + ((theta - sin theta) / theta) K^2
-                   // rho = dt * mean_linear_velocity and theta = angular_speed * dt
-                   // dt cancels in V * rho
-                   const Eigen::Vector3s R_times_p =
-                       point + sin_theta * K_times_p + one_minus_cos_theta * axis.cross(K_times_p);
-                   const Eigen::Vector3s V_times_rho =
-                       dt * mean_linear_velocity +
-                       (one_minus_cos_theta * inverse_angular_speed) * K_times_linear_velocity +
-                       ((theta - sin_theta) * inverse_angular_speed) * axis.cross(K_times_linear_velocity);
-                   const Eigen::Vector3s point_at_start = R_times_p + V_times_rho;
-                   // and finally move to reference time
-                   return Eigen::Vector3s(start2reference_rotation * point_at_start + start2reference_translation);
+                   const auto [it, inserted] = reference_T_stamp.try_emplace(timestamp.count());
+                   if (inserted) {
+                     it.value() = (start2reference * relative_pose_at_time(motion, timestamp)).matrix3x4();
+                   }
+                   const Eigen::Matrix<Scalar, 3, 4>& reference_T_point = it->second;
+                   return Eigen::Vector3s(reference_T_point.leftCols<3>() * point + reference_T_point.col(3));
                  });
 }
 
