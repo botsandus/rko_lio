@@ -57,8 +57,9 @@ struct LidarScan {
   std::vector<core::Vector3sVector> points;
   // per cloud: from its lidar's frame, which its points are in, to the base frame
   std::vector<Sophus::SE3s> lidar2base;
-  core::Nsec upstream{0};                        // node clock on arrival minus the scan's last point stamp
-  std::chrono::steady_clock::time_point arrival; // steady clock on arrival
+  core::Nsec upstream{0};                        // node clock on entering rko_lio's callback minus the last point stamp
+  std::chrono::steady_clock::time_point arrival; // entering rko_lio's callback
+  std::chrono::steady_clock::time_point ready;   // points converted from the message
 
   core::Nsec start() const { return timestamps.front().min; }
   core::Nsec end() const { return timestamps.front().max; }
@@ -73,9 +74,10 @@ struct LidarScan {
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
 
-// scan_metrics layout label, times in ns: upstream = LidarScan::upstream; queue = arrival until processing starts;
-// process = the processing
-constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,upstream_ns,queue_ns,process_ns,"
+// scan_metrics layout label, times in ns: upstream = LidarScan::upstream; convert = arrival to ready; wait = ready to
+// the registration start (an IMU sample past the scan end, or the previous scan); registration = start to the pose
+constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,upstream_ns,convert_ns,wait_ns,"
+                                                    "registration_ns,"
                                                     "status,input_points,keypoints,imu_samples,icp_iterations,"
                                                     "correspondences,icp_cost,reset_count";
 

@@ -93,7 +93,7 @@ public:
 
   // stats are empty for a scan dropped from the buffer
   void publish_scan_metrics(const LidarScan& scan,
-                            const std::chrono::steady_clock::time_point process_start,
+                            const std::chrono::steady_clock::time_point registration_start,
                             const ScanStatus status,
                             const core::ScanStats& stats);
 

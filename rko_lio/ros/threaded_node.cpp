@@ -203,7 +203,7 @@ void ThreadedNode::merge_ready_payloads() {
       timestamps.max = last_end;
     }
     // upstream includes the wait for the last lidar
-    merged.arrival = std::chrono::steady_clock::now();
+    merged.arrival = merged.ready = std::chrono::steady_clock::now();
     merged.upstream = utils::to_ns(node->now()) - merged.end();
     if (last_end - first_end > MAX_PHASE_SPREAD) {
       const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
@@ -263,7 +263,7 @@ void ThreadedNode::registration_loop() {
     }
     LidarScan scan = std::move(lidar_buffer.front());
     lidar_buffer.pop();
-    const auto process_start = std::chrono::steady_clock::now();
+    const auto registration_start = std::chrono::steady_clock::now();
     registration_busy = true;
     const core::Nsec end_stamp = scan.end();
     for (; !imu_buffer.empty() && imu_buffer.front().time < end_stamp; imu_buffer.pop()) {
@@ -283,14 +283,14 @@ void ThreadedNode::registration_loop() {
         publish_tf(lio->lidar_state);
         publish_lidar_outputs(deskewed_scan);
       }
-      publish_scan_metrics(scan, process_start, deskewed_scan.empty() ? ScanStatus::skipped : ScanStatus::ok,
+      publish_scan_metrics(scan, registration_start, deskewed_scan.empty() ? ScanStatus::skipped : ScanStatus::ok,
                            lio->scan_stats);
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
-      publish_scan_metrics(scan, process_start, ScanStatus::input_error, lio->scan_stats);
+      publish_scan_metrics(scan, registration_start, ScanStatus::input_error, lio->scan_stats);
     } catch (const core::RegistrationError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Registration failed (" << ex.what() << ").");
-      publish_scan_metrics(scan, process_start, ScanStatus::registration_error, lio->scan_stats);
+      publish_scan_metrics(scan, registration_start, ScanStatus::registration_error, lio->scan_stats);
       if (reset_on_registration_error) {
         reset_odometry();
       } else {
@@ -304,7 +304,7 @@ void ThreadedNode::registration_loop() {
 }
 
 void ThreadedNode::publish_scan_metrics(const LidarScan& scan,
-                                        const std::chrono::steady_clock::time_point process_start,
+                                        const std::chrono::steady_clock::time_point registration_start,
                                         const ScanStatus status,
                                         const core::ScanStats& stats) {
   if (!scan_metrics_publisher) {
@@ -313,8 +313,9 @@ void ThreadedNode::publish_scan_metrics(const LidarScan& scan,
   const std::int64_t scan_end = scan.end().count();
   const std::int64_t duration = (scan.end() - scan.start()).count();
   const std::int64_t upstream = scan.upstream.count();
-  const std::int64_t queue = ns_between(scan.arrival, process_start);
-  const std::int64_t process = ns_between(process_start, std::chrono::steady_clock::now());
+  const std::int64_t convert = ns_between(scan.arrival, scan.ready);
+  const std::int64_t wait = ns_between(scan.ready, registration_start);
+  const std::int64_t registration = ns_between(registration_start, std::chrono::steady_clock::now());
   // scan_end_ns as a double is rounded to 256 ns; the other values are exact
   std_msgs::msg::Float64MultiArray msg;
   std_msgs::msg::MultiArrayDimension& fields = msg.layout.dim.emplace_back();
@@ -323,8 +324,9 @@ void ThreadedNode::publish_scan_metrics(const LidarScan& scan,
       static_cast<double>(scan_end),
       static_cast<double>(duration),
       static_cast<double>(upstream),
-      static_cast<double>(queue),
-      static_cast<double>(process),
+      static_cast<double>(convert),
+      static_cast<double>(wait),
+      static_cast<double>(registration),
       static_cast<double>(status),
       static_cast<double>(stats.input_points),
       static_cast<double>(stats.keypoints),

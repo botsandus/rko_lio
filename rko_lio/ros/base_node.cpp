@@ -271,6 +271,7 @@ LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Const
   }
   scan.lidar2base.push_back(extrinsic_lidar2base);
   scan.upstream = arrival_node_clock - scan.end();
+  scan.ready = std::chrono::steady_clock::now();
   return scan;
 }
 
