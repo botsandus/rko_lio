@@ -13,6 +13,6 @@ struct PreprocessingResult {
 };
 
 // clip the input clouds, then downsample them as one
-PreprocessingResult preprocess_payload(std::vector<Vector3sVector> scan, const LIO::Config& config);
+PreprocessingResult preprocess_payload(std::vector<Vector3sVector> clouds, const LIO::Config& config);
 
 } // namespace rko_lio::core
