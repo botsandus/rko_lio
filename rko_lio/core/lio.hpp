@@ -116,8 +116,8 @@ public:
   void add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuControl& raw_imu);
 
   /**
-   * Register one scan given as several clouds, e.g. one per phase-locked lidar, without concatenating them, applying
-   * deskewing based on the initial motion guess and clipping points beyond valid range.
+   * Register one scan given as several clouds, e.g. one per phase-locked lidar, applying deskewing based on the initial
+   * motion guess and clipping points beyond valid range.
    * @param scan The clouds, each in its lidar's frame.
    * @param timestamps One entry per cloud: its per-point timestamps; every entry carries the whole scan's min/max.
    * @param lidar2base One entry per cloud: the extrinsic from its lidar to the base frame.

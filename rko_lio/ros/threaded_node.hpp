@@ -85,20 +85,18 @@ public:
   ThreadedNode(const std::string& node_name, const rclcpp::NodeOptions& options);
 
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
-  // the scan of a lidar message, with its arrival and transport; throws core::InputError
-  LidarScan receive_scan(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();
   void merge_payload(std::vector<PayloadSlot>& slots);
-  void enqueue_scan(LidarScan scan);
+  void enqueue(LidarScan scan);
   void registration_loop();
 
   // A scan's row: its statistics (empty for one dropped from the buffer) and what became of it.
-  void record_scan(const LidarScan& scan,
-                   const std::chrono::steady_clock::time_point process_start,
-                   const ScanStatus status,
-                   const core::ScanStats& stats);
+  void publish_scan_metrics(const LidarScan& scan,
+                            const std::chrono::steady_clock::time_point process_start,
+                            const ScanStatus status,
+                            const core::ScanStats& stats);
 
   ~ThreadedNode();
   ThreadedNode(const ThreadedNode&) = delete;

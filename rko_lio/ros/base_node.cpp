@@ -25,6 +25,7 @@
 #include "base_node.hpp"
 #include "rko_lio/ros/utils/spdlog_sink.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
+#include <UTL/profiler.hpp>
 // other
 #include <optional>
 #include <rclcpp/version.h>
@@ -205,7 +206,7 @@ void BaseNode::parse_cli_extrinsics() {
       throw std::invalid_argument(
           "extrinsic_lidar2base_quat_xyzw_xyz is per lidar: with lidar_topics each lidar's extrinsic comes from tf.");
     }
-    extrinsics_set = imu_ok; // the merged scan's own extrinsic is the identity
+    extrinsics_set = imu_ok; // merging: each cloud's extrinsic comes from tf
     return;
   }
   extrinsics_set = imu_ok && lidar_ok;
@@ -252,20 +253,24 @@ bool BaseNode::check_and_set_extrinsics() {
 }
 
 LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const {
+  const auto arrival = std::chrono::steady_clock::now();
+  const core::Nsec arrival_node_clock = utils::to_ns(node->now());
+  UTL_PROFILER_SCOPE("rko_lio: convert message");
   const core::Nsec header_stamp = utils::to_ns(lidar_msg->header.stamp);
-  LidarScan scan;
+  LidarScan scan{.arrival = arrival};
   if (lio->config.deskew) {
     utils::RawScan raw = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
     scan.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
     scan.points.push_back(std::move(raw.points));
-    scan.lidar2base.push_back(extrinsic_lidar2base);
-    return scan;
+  } else {
+    RCLCPP_WARN_STREAM_ONCE(node->get_logger(),
+                            "Deskewing is disabled. Populating timestamps with static header time.");
+    scan.points.push_back(utils::point_cloud2_to_eigen(lidar_msg));
+    scan.timestamps.push_back({.min = header_stamp, .max = header_stamp});
+    scan.timestamps.front().per_point.assign(scan.points.front().size(), header_stamp);
   }
-  RCLCPP_WARN_STREAM_ONCE(node->get_logger(), "Deskewing is disabled. Populating timestamps with static header time.");
-  scan.points.push_back(utils::point_cloud2_to_eigen(lidar_msg));
-  scan.timestamps.push_back({.min = header_stamp, .max = header_stamp});
-  scan.timestamps.front().per_point.assign(scan.points.front().size(), header_stamp);
   scan.lidar2base.push_back(extrinsic_lidar2base);
+  scan.upstream = arrival_node_clock - scan.end();
   return scan;
 }
 
@@ -292,7 +297,7 @@ void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& de
     std_msgs::msg::Header header;
     header.frame_id = base_frame;
     header.stamp = utils::to_ros_time(lio->lidar_state.time);
-    core::Vector3sVector points; // one message: the clouds concatenated, only here
+    core::Vector3sVector points; // one message for all clouds
     for (const core::Vector3sVector& cloud : deskewed_scan) {
       points.insert(points.end(), cloud.begin(), cloud.end());
     }

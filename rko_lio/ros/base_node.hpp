@@ -51,14 +51,14 @@
 
 namespace rko_lio::ros {
 
-// One scan as one cloud per lidar (one, or one per merged lidar), never concatenated.
+// one scan: a cloud per lidar, several when merging
 struct LidarScan {
   std::vector<core::Timestamps> timestamps; // per cloud; every entry carries the whole scan's min/max
   std::vector<core::Vector3sVector> points;
   // per cloud: from its lidar's frame, which its points are in, to the base frame
   std::vector<Sophus::SE3s> lidar2base;
-  core::Nsec transport{0};                       // node clock at arrival minus the scan's last point
-  std::chrono::steady_clock::time_point arrival; // when the callback took the message
+  core::Nsec upstream{0};                        // node clock on arrival minus the scan's last point stamp
+  std::chrono::steady_clock::time_point arrival; // steady clock on arrival
 
   core::Nsec start() const { return timestamps.front().min; }
   core::Nsec end() const { return timestamps.front().max; }
@@ -73,10 +73,9 @@ struct LidarScan {
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
 
-// A scan's statistics, as the published message's layout label. Times in ns: the scan's last point (sensor clock) and
-// duration; transport: its arrival on the node clock minus its last point; queue and process: the steady clock from
-// arrival to the start of its processing, and the processing.
-constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,transport_ns,queue_ns,process_ns,"
+// scan_metrics layout label, times in ns: upstream = LidarScan::upstream; queue = arrival until processing starts;
+// process = the processing
+constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,upstream_ns,queue_ns,process_ns,"
                                                     "status,input_points,keypoints,imu_samples,icp_iterations,"
                                                     "correspondences,icp_cost,reset_count";
 
@@ -141,6 +140,7 @@ public:
   // to querying TF inline per-message.
   bool ensure_frame_and_extrinsics(std::string& target_frame, const std::string& msg_frame, std::string_view kind);
 
+  // stamps the arrival first; throws core::InputError
   LidarScan process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
 
   std::vector<core::Vector3sVector> register_scan_locked(std::vector<core::Vector3sVector> scan,
