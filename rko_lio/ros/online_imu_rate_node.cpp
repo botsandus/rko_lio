@@ -24,7 +24,6 @@
 
 #include "base_node.hpp"
 #include "rko_lio/core/error.hpp"
-#include "rko_lio/core/profiler.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
 
 namespace rko_lio::ros {
@@ -39,7 +38,6 @@ public:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_at_imu_rate_publisher;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
   rclcpp::SubscriptionBase::SharedPtr lidar_sub;
-  core::Timer timer;
 
   std::string odom_at_imu_rate_topic = "rko_lio/odom_at_imu_rate";
   bool tf_at_imu_rate = false;
@@ -50,8 +48,7 @@ public:
   OnlineImuRateNode& operator=(OnlineImuRateNode&&) = delete;
   ~OnlineImuRateNode() = default;
 
-  explicit OnlineImuRateNode(const rclcpp::NodeOptions& options)
-      : BaseNode("rko_lio_online_imu_rate_node", options), timer("RKO LIO Online IMU-rate Node") {
+  explicit OnlineImuRateNode(const rclcpp::NodeOptions& options) : BaseNode("rko_lio_online_imu_rate_node", options) {
     require_single_lidar();
     odom_at_imu_rate_topic = node->declare_parameter<std::string>("seq.odom_at_imu_rate_topic", odom_at_imu_rate_topic);
     tf_at_imu_rate = node->declare_parameter<bool>("seq.tf_at_imu_rate", tf_at_imu_rate);

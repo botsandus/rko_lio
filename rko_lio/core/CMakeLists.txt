@@ -43,7 +43,6 @@ compat_target_sources(
         ../../rko_lio/core/lio.hpp
         ../../rko_lio/core/preprocess_scan.hpp
         ../../rko_lio/core/process_timestamps.hpp
-        ../../rko_lio/core/profiler.hpp
         ../../rko_lio/core/voxel_hash_map.hpp
         ../../rko_lio/core/util.hpp
         ../../rko_lio/core/voxel_down_sample.hpp

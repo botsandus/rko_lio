@@ -22,7 +22,6 @@
  * SOFTWARE.
  */
 
-#include "rko_lio/core/profiler.hpp"
 #include "rko_lio/ros/utils/point_cloud_read.hpp"
 #include "threaded_node.hpp"
 
@@ -33,7 +32,6 @@ public:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
   rclcpp::SubscriptionBase::SharedPtr lidar_sub;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> multi_lidar_subs;
-  rko_lio::core::Timer timer;
 
   OnlineNode(const OnlineNode&) = delete;
   OnlineNode(OnlineNode&&) = delete;
@@ -41,8 +39,7 @@ public:
   OnlineNode& operator=(OnlineNode&&) = delete;
   ~OnlineNode() = default;
 
-  explicit OnlineNode(const rclcpp::NodeOptions& options)
-      : ThreadedNode("rko_lio_online_node", options), timer("RKO LIO Online Node") {
+  explicit OnlineNode(const rclcpp::NodeOptions& options) : ThreadedNode("rko_lio_online_node", options) {
     const auto qos_imu = rclcpp::SensorDataQoS().keep_last(100);
     const auto qos_lidar = rclcpp::SensorDataQoS().keep_last(10);
 

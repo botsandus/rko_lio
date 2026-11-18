@@ -22,10 +22,10 @@
  * SOFTWARE.
  */
 
-#include "rko_lio/core/profiler.hpp"
 #include "rko_lio/ros/utils/point_cloud_read.hpp"
 #include "rko_lio/ros/utils/rosbag.hpp"
 #include "threaded_node.hpp"
+#include <UTL/profiler.hpp>
 #include <spdlog/spdlog.h>
 // other
 #include <std_msgs/msg/float32_multi_array.hpp>
@@ -135,10 +135,12 @@ public:
 
 int main(int argc, char* const* argv) {
   try {
-    const rko_lio::core::Timer timer("RKO LIO Offline Node");
     rclcpp::init(argc, argv);
     auto node = rko_lio::ros::OfflineNode(rclcpp::NodeOptions());
-    node.run();
+    {
+      UTL_PROFILER_SCOPE("rko_lio: offline run");
+      node.run();
+    }
     rclcpp::shutdown();
   } catch (const std::exception& error) {
     spdlog::critical("{}", error.what());
