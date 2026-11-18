@@ -29,6 +29,7 @@
 // stl
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
@@ -40,11 +41,16 @@ using namespace std::literals;
 // while no scan waits for them, the IMU buffer keeps this much before its newest sample
 constexpr rko_lio::core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
 
-// Merging assumes phase-locked lidars at 10 Hz: one revolution's scans end within MAX_PHASE_SPREAD of each other
-// (measured within 0.3 ms on a B18), one LIDAR_PERIOD after the previous revolution.
+// Merging assumes phase-locked lidars at 10 Hz: one merge payload's scans end within MAX_PHASE_SPREAD of each other
+// (measured within 0.3 ms on a B18), one LIDAR_PERIOD after the previous payload.
 constexpr rko_lio::core::Nsec MAX_PHASE_SPREAD = 5ms;
 constexpr rko_lio::core::Nsec LIDAR_PERIOD = 100ms;
 constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
+
+std::int64_t payload_of(const rko_lio::ros::ThreadedNode::PayloadAnchor& anchor, const rko_lio::core::Nsec end) {
+  return anchor.payload +
+         std::llround(rko_lio::core::to_seconds(end - anchor.end) / rko_lio::core::to_seconds(LIDAR_PERIOD));
+}
 
 std::int64_t ns_between(const std::chrono::steady_clock::time_point from,
                         const std::chrono::steady_clock::time_point to) {
@@ -84,20 +90,24 @@ void ThreadedNode::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu
   }
 }
 
-void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) {
+LidarScan ThreadedNode::receive_scan(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const {
   const auto arrival = std::chrono::steady_clock::now();
   const core::Nsec arrival_node_clock = utils::to_ns(node->now());
+  LidarScan scan = std::invoke([&] {
+    UTL_PROFILER_SCOPE("rko_lio: convert message");
+    return process_lidar_msg(lidar_msg);
+  });
+  scan.arrival = arrival;
+  scan.transport = arrival_node_clock - scan.end();
+  return scan;
+}
+
+void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) {
   if (!ensure_frame_and_extrinsics(lidar_frame, lidar_msg->header.frame_id, "LiDAR")) {
     return;
   }
   try {
-    LidarScan scan = [&] {
-      UTL_PROFILER_SCOPE("rko_lio: convert message");
-      return process_lidar_msg(lidar_msg);
-    }();
-    scan.arrival = arrival;
-    scan.transport = arrival_node_clock - scan.end();
-    enqueue_scan(std::move(scan));
+    enqueue_scan(receive_scan(lidar_msg));
   } catch (const core::InputError& ex) {
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
   }
@@ -105,8 +115,6 @@ void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstShar
 
 void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
                                   const std::size_t input) {
-  const auto arrival = std::chrono::steady_clock::now();
-  const core::Nsec arrival_node_clock = utils::to_ns(node->now());
   MergeInput& in = merge_inputs[input];
   if (!in.lidar2base) {
     in.lidar2base = utils::get_transform(tf_buffer, lidar_msg->header.frame_id, base_frame, 0s);
@@ -119,87 +127,96 @@ void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstShar
     return;
   }
   try {
-    LidarScan scan = [&] {
-      UTL_PROFILER_SCOPE("rko_lio: convert message");
-      return process_lidar_msg(lidar_msg);
-    }();
-    scan.arrival = arrival;
-    scan.transport = arrival_node_clock - scan.end();
+    LidarScan scan = receive_scan(lidar_msg);
+    scan.lidar2base.front() = *in.lidar2base;
     if (in.fragments.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
                                  static_cast<core::Scalar>(scan.point_count()))) {
       RCLCPP_WARN_STREAM(node->get_logger(),
                          "Dropping a LiDAR scan fragment of " << scan.point_count() << " points from " << in.topic);
       record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.point_count()});
+      if (payload_anchor) {
+        const std::int64_t payload = payload_of(*payload_anchor, scan.end());
+        if (payload > last_merged_payload) {
+          std::vector<PayloadSlot>& slots = open_payloads[payload];
+          slots.resize(merge_inputs.size());
+          slots[input].dropped = true;
+          merge_ready_payloads();
+        }
+      }
       return;
     }
-    {
-      UTL_PROFILER_SCOPE("rko_lio: merge, to base frame");
-      for (Eigen::Vector3s& point : scan.points.front()) {
-        point = *in.lidar2base * point;
-      }
+    if (!payload_anchor) {
+      payload_anchor = PayloadAnchor{.end = scan.end(), .payload = 0};
     }
-    if (!revolution_origin) {
-      revolution_origin = scan.end();
-    }
-    const std::int64_t revolution =
-        std::llround(core::to_seconds(scan.end() - *revolution_origin) / core::to_seconds(LIDAR_PERIOD));
-    std::vector<std::optional<LidarScan>>& slots = open_revolutions[revolution];
-    slots.resize(merge_inputs.size());
-    if (revolution <= last_merged_revolution || slots[input]) {
-      RCLCPP_WARN_STREAM(node->get_logger(), "Dropping a LiDAR scan from "
-                                                 << in.topic
-                                                 << (slots[input] ? ": a second one in one revolution"
-                                                                  : ": its revolution was merged without it"));
+    const std::int64_t payload = payload_of(*payload_anchor, scan.end());
+    if (payload <= last_merged_payload) {
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         "Dropping a LiDAR scan from " << in.topic << ": its payload was merged without it");
       record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.point_count()});
-      if (revolution <= last_merged_revolution) {
-        open_revolutions.erase(revolution);
-      }
       return;
     }
-    slots[input] = std::move(scan);
-    merge_ready_revolutions();
+    std::vector<PayloadSlot>& slots = open_payloads[payload];
+    slots.resize(merge_inputs.size());
+    if (slots[input].scan) {
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         "Dropping a LiDAR scan from " << in.topic << ": a second one in one payload");
+      record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.point_count()});
+      return;
+    }
+    if (payload > payload_anchor->payload) {
+      payload_anchor = PayloadAnchor{.end = scan.end(), .payload = payload};
+    }
+    slots[input].scan = std::move(scan);
+    merge_ready_payloads();
   } catch (const core::InputError& ex) {
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
   }
 }
 
-void ThreadedNode::merge_ready_revolutions() {
-  // oldest first: a complete revolution; an incomplete one once a newer one is complete or two newer ones are open
-  // (its missing lidars dropped that scan)
-  const auto complete = [](const auto& revolution) {
-    return std::ranges::all_of(revolution.second, [](const auto& slot) { return slot.has_value(); });
+void ThreadedNode::merge_ready_payloads() {
+  // oldest first: a complete payload (each lidar's scan in, or dropped as a fragment); an incomplete one once a newer
+  // one is complete or the newest open one is at least two payloads newer (its missing lidars dropped that scan)
+  const auto complete = [](const auto& payload) {
+    return std::ranges::all_of(payload.second, [](const PayloadSlot& slot) { return slot.scan || slot.dropped; });
   };
-  while (!open_revolutions.empty()) {
-    const auto oldest = open_revolutions.begin();
-    const bool newer_complete = std::any_of(std::next(oldest), open_revolutions.end(), complete);
-    const bool stale = open_revolutions.rbegin()->first - oldest->first >= 2;
+  while (!open_payloads.empty()) {
+    const auto oldest = open_payloads.begin();
+    const bool newer_complete = std::any_of(std::next(oldest), open_payloads.end(), complete);
+    const bool stale = open_payloads.rbegin()->first - oldest->first >= 2;
     if (!complete(*oldest) && !newer_complete && !stale) {
       return;
     }
-    last_merged_revolution = oldest->first;
-    merge_revolution(oldest->second);
-    open_revolutions.erase(oldest);
+    last_merged_payload = oldest->first;
+    merge_payload(oldest->second);
+    open_payloads.erase(oldest);
   }
 }
 
-void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots) {
-  UTL_PROFILER_SCOPE("rko_lio: merge revolution");
+void ThreadedNode::merge_payload(std::vector<PayloadSlot>& slots) {
+  UTL_PROFILER_SCOPE("rko_lio: merge payload");
   LidarScan merged;
   core::Nsec start = core::Nsec::max();
   core::Nsec first_end = core::Nsec::max();
   core::Nsec last_end = core::Nsec::min();
   std::string missing;
   for (std::size_t input = 0; input < slots.size(); ++input) {
-    if (!slots[input]) {
-      missing += " " + merge_inputs[input].topic;
+    PayloadSlot& slot = slots[input];
+    if (!slot.scan) {
+      if (!slot.dropped) {
+        missing += " " + merge_inputs[input].topic;
+      }
       continue;
     }
-    LidarScan& scan = *slots[input];
+    LidarScan& scan = *slot.scan;
     start = std::min(start, scan.start());
     first_end = std::min(first_end, scan.end());
     last_end = std::max(last_end, scan.end());
     merged.timestamps.push_back(std::move(scan.timestamps.front()));
     merged.points.push_back(std::move(scan.points.front()));
+    merged.lidar2base.push_back(scan.lidar2base.front());
+  }
+  if (merged.points.empty()) {
+    return;
   }
   for (core::Timestamps& timestamps : merged.timestamps) {
     timestamps.min = start;
@@ -218,7 +235,7 @@ void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots
     if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
       RCLCPP_FATAL(
           node->get_logger(),
-          "%d revolutions in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
+          "%d merge payloads in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
           "Exiting.",
           consecutive_unsynced);
       throw std::runtime_error("lidar_topics: the lidars are not phase-locked");
@@ -227,7 +244,7 @@ void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots
   }
   consecutive_unsynced = 0;
   if (!missing.empty()) {
-    RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan this revolution from" << missing);
+    RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan in this payload from" << missing);
   }
   enqueue_scan(std::move(merged));
 }
@@ -278,7 +295,7 @@ void ThreadedNode::registration_loop() {
 
     try {
       const std::vector<core::Vector3sVector> deskewed_scan =
-          register_scan_locked(std::move(scan.points), scan.timestamps);
+          register_scan_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
       if (!deskewed_scan.empty()) {
         // TODO: first scan is skipped and an empty scan is returned. improve how we handle this
         publish_tf(lio->lidar_state);

@@ -45,7 +45,7 @@
 namespace rko_lio::ros {
 
 // What became of a scan: registered, skipped by the odometry (out of order, a fragment, or ending too soon after the
-// previous one), dropped, or (merging) one revolution whose lidars' scans did not end together.
+// previous one), dropped, or (merging) one merge payload whose lidars' scans did not end together.
 enum class ScanStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error, unsynced };
 
 class ThreadedNode : public BaseNode {
@@ -60,8 +60,9 @@ public:
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
 
-  // lidar_topics: each lidar's scans go into the base frame and are grouped by revolution (scan end relative to the
-  // first one seen, in 10 Hz periods); a revolution's scans are concatenated with their own point times into one scan.
+  // lidar_topics: each lidar's scans are grouped into merge payloads, one scan from each lidar. A scan's payload is the
+  // anchor's plus the distance of its end from the anchor's end in 10 Hz periods; the anchor moves to each scan that
+  // opens a newer payload, so the count does not drift. A payload's clouds stay one per lidar, each with its extrinsic.
   // Only the lidar callbacks touch these; they share the node's default (mutually exclusive) callback group, so they
   // never run at once.
   struct MergeInput {
@@ -69,10 +70,18 @@ public:
     std::optional<Sophus::SE3s> lidar2base; // from tf on its first scan: the lidars are rigid
     core::ScanFragmentCheck fragments;
   };
+  struct PayloadSlot {
+    std::optional<LidarScan> scan;
+    bool dropped = false; // its lidar's scan for this payload was a fragment
+  };
+  struct PayloadAnchor {
+    core::Nsec end{0};
+    std::int64_t payload = 0;
+  };
   std::vector<MergeInput> merge_inputs;
-  std::map<std::int64_t, std::vector<std::optional<LidarScan>>> open_revolutions; // one slot per lidar
-  std::optional<core::Nsec> revolution_origin;
-  std::int64_t last_merged_revolution = std::numeric_limits<std::int64_t>::min();
+  std::map<std::int64_t, std::vector<PayloadSlot>> open_payloads; // one slot per lidar
+  std::optional<PayloadAnchor> payload_anchor;
+  std::int64_t last_merged_payload = std::numeric_limits<std::int64_t>::min();
   int consecutive_unsynced = 0;
   std::jthread registration_thread;
 
@@ -80,10 +89,12 @@ public:
   ThreadedNode(const std::string& node_name, const rclcpp::NodeOptions& options);
 
   void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
+  // the scan of a lidar message, with its arrival and transport; throws core::InputError
+  LidarScan receive_scan(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void merge_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, std::size_t input);
-  void merge_ready_revolutions();
-  void merge_revolution(std::vector<std::optional<LidarScan>>& slots);
+  void merge_ready_payloads();
+  void merge_payload(std::vector<PayloadSlot>& slots);
   void enqueue_scan(LidarScan scan);
   void registration_loop();
 

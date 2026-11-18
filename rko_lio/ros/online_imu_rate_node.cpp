@@ -110,7 +110,7 @@ public:
     try {
       LidarScan scan = process_lidar_msg(lidar_msg);
       const std::vector<core::Vector3sVector> deskewed_scan =
-          register_scan_locked(std::move(scan.points), scan.timestamps);
+          register_scan_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
       if (deskewed_scan.empty()) {
         // first scan is skipped and an empty scan is returned. nothing to publish.
         return;

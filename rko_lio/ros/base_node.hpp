@@ -55,6 +55,8 @@ namespace rko_lio::ros {
 struct LidarScan {
   std::vector<core::Timestamps> timestamps; // per cloud; every entry carries the whole scan's min/max
   std::vector<core::Vector3sVector> points;
+  // per cloud: from its lidar's frame, which its points are in, to the base frame
+  std::vector<Sophus::SE3s> lidar2base;
   core::Nsec transport{0};                       // node clock at arrival minus the scan's last point
   std::chrono::steady_clock::time_point arrival; // when the callback took the message
 
@@ -140,7 +142,8 @@ public:
   LidarScan process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
 
   std::vector<core::Vector3sVector> register_scan_locked(std::vector<core::Vector3sVector> scan,
-                                                         std::span<const core::Timestamps> timestamps);
+                                                         std::span<const core::Timestamps> timestamps,
+                                                         std::span<const Sophus::SE3s> lidar2base);
 
   void publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const;
 

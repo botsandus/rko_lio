@@ -66,7 +66,7 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
       throw std::invalid_argument(
           "lidar_frame is per lidar: with lidar_topics each lidar's frame comes from its scans.");
     }
-    lidar_frame = base_frame; // the merged scan is in the base frame already: each lidar's extrinsic is applied first
+    lidar_frame = base_frame; // each merged cloud carries its own lidar's extrinsic
   }
   odom_frame = node->declare_parameter<std::string>("odom_frame", odom_frame);
   odom_topic = node->declare_parameter<std::string>("odom_topic", odom_topic);
@@ -251,17 +251,20 @@ LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Const
     utils::RawScan raw = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
     scan.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
     scan.points.push_back(std::move(raw.points));
+    scan.lidar2base.push_back(extrinsic_lidar2base);
     return scan;
   }
   RCLCPP_WARN_STREAM_ONCE(node->get_logger(), "Deskewing is disabled. Populating timestamps with static header time.");
   scan.points.push_back(utils::point_cloud2_to_eigen(lidar_msg));
   scan.timestamps.push_back({.min = header_stamp, .max = header_stamp});
   scan.timestamps.front().per_point.assign(scan.points.front().size(), header_stamp);
+  scan.lidar2base.push_back(extrinsic_lidar2base);
   return scan;
 }
 
 std::vector<core::Vector3sVector> BaseNode::register_scan_locked(std::vector<core::Vector3sVector> scan,
-                                                                const std::span<const core::Timestamps> timestamps) {
+                                                                 const std::span<const core::Timestamps> timestamps,
+                                                                 const std::span<const Sophus::SE3s> lidar2base) {
   if (atomic_reset_requested.exchange(false)) {
     RCLCPP_WARN(node->get_logger(), "Odometry reset requested through the reset service.");
     reset_odometry(); // takes local_map_mutex itself
@@ -270,7 +273,6 @@ std::vector<core::Vector3sVector> BaseNode::register_scan_locked(std::vector<cor
   if (publish_local_map) {
     lock.lock(); // map publish thread may access map simultaneously
   }
-  const std::vector<Sophus::SE3s> lidar2base(scan.size(), extrinsic_lidar2base);
   return lio->register_scan(std::move(scan), timestamps, lidar2base);
 }
 
