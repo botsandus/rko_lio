@@ -5,11 +5,13 @@
 
 namespace rko_lio::core {
 
-PreprocessingResult preprocess_scan(Vector3sVector scan, const LIO::Config& config) {
-  std::erase_if(scan, [&](const auto& point) {
-    const Scalar point_range = point.norm();
-    return !std::isfinite(point_range) || point_range <= config.min_range || point_range >= config.max_range;
-  });
+PreprocessingResult preprocess_scan(std::vector<Vector3sVector> scan, const LIO::Config& config) {
+  for (Vector3sVector& cloud : scan) {
+    std::erase_if(cloud, [&](const auto& point) {
+      const Scalar point_range = point.norm();
+      return !std::isfinite(point_range) || point_range <= config.min_range || point_range >= config.max_range;
+    });
+  }
 
   if (config.double_downsample) {
     Vector3sVector downsampled = voxel_down_sample(scan, config.voxel_size * static_cast<Scalar>(0.5));

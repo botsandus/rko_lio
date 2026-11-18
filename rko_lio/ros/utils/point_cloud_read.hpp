@@ -41,6 +41,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
 namespace rko_lio::ros::utils {
+// both readers skip points with a non-finite coordinate (an organised cloud's empty slots)
 core::Vector3sVector point_cloud2_to_eigen(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
 
 struct RawScan {

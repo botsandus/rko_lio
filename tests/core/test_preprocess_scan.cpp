@@ -27,10 +27,10 @@ TEST_CASE("preprocess_scan: clipping by min/max range", "[preprocess_scan]") {
       {49.0, 0.0, 0.0}, {60.0, 0.0, 0.0}, {100.0, 0.0, 0.0},
   };
 
-  const auto result = preprocess_scan(frame, cfg);
+  const auto result = preprocess_scan({frame}, cfg);
 
-  REQUIRE(result.filtered_scan.size() == 3);
-  for (const auto& p : result.filtered_scan) {
+  REQUIRE(result.filtered_scan.front().size() == 3);
+  for (const auto& p : result.filtered_scan.front()) {
     const double r = p.norm();
     REQUIRE(r > cfg.min_range);
     REQUIRE(r < cfg.max_range);
@@ -48,10 +48,10 @@ TEST_CASE("preprocess_scan: double_downsample = false -> no map_points", "[prepr
     }
   }
 
-  const auto result = preprocess_scan(frame, cfg);
+  const auto result = preprocess_scan({frame}, cfg);
   REQUIRE(result.map_points.empty());
   REQUIRE(result.keypoints.size() > 0);
-  REQUIRE(result.filtered_scan.size() == frame.size());
+  REQUIRE(result.filtered_scan.front().size() == frame.size());
 }
 
 TEST_CASE("preprocess_scan: double_downsample = true -> all three populated", "[preprocess_scan]") {
@@ -65,8 +65,8 @@ TEST_CASE("preprocess_scan: double_downsample = true -> all three populated", "[
     }
   }
 
-  const auto result = preprocess_scan(frame, cfg);
+  const auto result = preprocess_scan({frame}, cfg);
   REQUIRE_FALSE(result.map_points.empty());
   REQUIRE(result.map_points.size() >= result.keypoints.size());
-  REQUIRE(result.filtered_scan.size() == frame.size());
+  REQUIRE(result.filtered_scan.front().size() == frame.size());
 }

@@ -277,23 +277,22 @@ bool BaseNode::check_and_set_extrinsics() {
 
 LidarScan BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const {
   const core::Nsec header_stamp = utils::to_ns(lidar_msg->header.stamp);
+  LidarScan scan;
   if (lio->config.deskew) {
-    utils::RawScan scan = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
-    return {
-        .timestamps = core::process_timestamps(scan.timestamps, header_stamp, timestamp_proc_config),
-        .points = std::move(scan.points),
-    };
+    utils::RawScan raw = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
+    scan.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
+    scan.points.push_back(std::move(raw.points));
+    return scan;
   }
   RCLCPP_WARN_STREAM_ONCE(node->get_logger(), "Deskewing is disabled. Populating timestamps with static header time.");
-  LidarScan scan{
-      .timestamps = {.min = header_stamp, .max = header_stamp},
-      .points = utils::point_cloud2_to_eigen(lidar_msg),
-  };
-  scan.timestamps.per_point.assign(scan.points.size(), header_stamp);
+  scan.points.push_back(utils::point_cloud2_to_eigen(lidar_msg));
+  scan.timestamps.push_back({.min = header_stamp, .max = header_stamp});
+  scan.timestamps.front().per_point.assign(scan.points.front().size(), header_stamp);
   return scan;
 }
 
-core::Vector3sVector BaseNode::register_scan_locked(core::Vector3sVector scan, const core::Timestamps& timestamps) {
+std::vector<core::Vector3sVector> BaseNode::register_scan_locked(std::vector<core::Vector3sVector> scan,
+                                                                const std::span<const core::Timestamps> timestamps) {
   if (atomic_reset_requested.exchange(false)) {
     RCLCPP_WARN(node->get_logger(), "Odometry reset requested through the reset service.");
     reset_odometry(); // takes local_map_mutex itself
@@ -302,7 +301,10 @@ core::Vector3sVector BaseNode::register_scan_locked(core::Vector3sVector scan, c
   if (publish_local_map) {
     lock.lock(); // map publish thread may access map simultaneously
   }
-  core::Vector3sVector deskewed_scan = lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
+  return lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
+}
+
+void BaseNode::queue_poses_for_results() {
   if (dump_results) { // the poses leave the core's window only here, to the poses file
     const std::scoped_lock results_lock(results_mutex);
     for (const auto& [time, pose] : lio->poses_with_timestamps) {
@@ -313,19 +315,22 @@ core::Vector3sVector BaseNode::register_scan_locked(core::Vector3sVector scan, c
     }
     lio->poses_with_timestamps.clear();
   }
-  return deskewed_scan;
 }
 
-void BaseNode::publish_lidar_outputs(const core::Vector3sVector& deskewed_scan) const {
+void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const {
+  publish_odometry(lio->lidar_state, odom_publisher);
+  if (publish_lidar_acceleration) {
+    publish_lidar_accel(lio->lidar_state);
+  }
   if (publish_deskewed_scan) {
     std_msgs::msg::Header header;
     header.frame_id = base_frame;
     header.stamp = utils::to_ros_time(lio->lidar_state.time);
-    frame_publisher->publish(utils::eigen_to_point_cloud2(deskewed_scan, header));
-  }
-  publish_odometry(lio->lidar_state, odom_publisher);
-  if (publish_lidar_acceleration) {
-    publish_lidar_accel(lio->lidar_state);
+    core::Vector3sVector points; // one message: the clouds concatenated, only here
+    for (const core::Vector3sVector& cloud : deskewed_scan) {
+      points.insert(points.end(), cloud.begin(), cloud.end());
+    }
+    frame_publisher->publish(utils::eigen_to_point_cloud2(points, header));
   }
 }
 

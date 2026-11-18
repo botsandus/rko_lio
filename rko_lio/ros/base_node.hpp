@@ -31,6 +31,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -53,11 +54,22 @@
 
 namespace rko_lio::ros {
 
+// One scan as one cloud per lidar (one, or one per merged lidar), never concatenated.
 struct LidarScan {
-  core::Timestamps timestamps;
-  core::Vector3sVector points;
+  std::vector<core::Timestamps> timestamps; // per cloud; every entry carries the whole scan's min/max
+  std::vector<core::Vector3sVector> points;
   core::Nsec transport{0};                       // node clock at arrival minus the scan's last point
   std::chrono::steady_clock::time_point arrival; // when the callback took the message
+
+  core::Nsec start() const { return timestamps.front().min; }
+  core::Nsec end() const { return timestamps.front().max; }
+  std::size_t point_count() const {
+    std::size_t count = 0;
+    for (const core::Vector3sVector& cloud : points) {
+      count += cloud.size();
+    }
+    return count;
+  }
 };
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
@@ -143,9 +155,13 @@ public:
 
   LidarScan process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) const;
 
-  core::Vector3sVector register_scan_locked(core::Vector3sVector scan, const core::Timestamps& timestamps);
+  std::vector<core::Vector3sVector> register_scan_locked(std::vector<core::Vector3sVector> scan,
+                                                         std::span<const core::Timestamps> timestamps);
 
-  void publish_lidar_outputs(const core::Vector3sVector& deskewed_scan) const;
+  void publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const;
+
+  // after publishing, so the pose goes out first: moves the core's poses to the pending results
+  void queue_poses_for_results();
 
   void publish_odometry(const core::State& state,
                         const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr& publisher) const;

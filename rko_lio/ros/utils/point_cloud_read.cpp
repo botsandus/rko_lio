@@ -31,6 +31,7 @@
 #include <spdlog/spdlog.h>
 // stl
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -49,7 +50,9 @@ core::Vector3sVector point_cloud2_to_eigen(const sensor_msgs::msg::PointCloud2::
   sensor_msgs::PointCloud2ConstIterator<float> msg_y(*msg, "y");
   sensor_msgs::PointCloud2ConstIterator<float> msg_z(*msg, "z");
   for (size_t i = 0; i < point_count; ++i, ++msg_x, ++msg_y, ++msg_z) {
-    points.emplace_back(*msg_x, *msg_y, *msg_z);
+    if (std::isfinite(*msg_x) && std::isfinite(*msg_y) && std::isfinite(*msg_z)) {
+      points.emplace_back(*msg_x, *msg_y, *msg_z);
+    }
   }
   return points;
 }
@@ -80,8 +83,10 @@ RawScan point_cloud2_to_eigen_with_timestamps(const PointCloud2::ConstSharedPtr&
   // templated lambda (auto) ftw
   const auto extract_points_and_timestamps = [&](auto&& time_iter) {
     for (size_t i = 0; i < point_count; ++i, ++msg_x, ++msg_y, ++msg_z, ++time_iter) {
-      scan.points.emplace_back(*msg_x, *msg_y, *msg_z);
-      scan.timestamps.emplace_back(static_cast<double>(*time_iter));
+      if (std::isfinite(*msg_x) && std::isfinite(*msg_y) && std::isfinite(*msg_z)) {
+        scan.points.emplace_back(*msg_x, *msg_y, *msg_z);
+        scan.timestamps.emplace_back(static_cast<double>(*time_iter));
+      }
     }
   };
 

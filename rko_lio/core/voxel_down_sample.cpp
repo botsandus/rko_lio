@@ -34,14 +34,20 @@ namespace rko_lio::core {
 // https://github.com/PRBonn/kiss-icp/pull/347
 // although it does lead to worse odometry performance in certain situations
 
-std::vector<Eigen::Vector3s> voxel_down_sample(const std::vector<Eigen::Vector3s>& points, const Scalar voxel_size) {
+std::vector<Eigen::Vector3s> voxel_down_sample(std::span<const Vector3sVector> clouds, const Scalar voxel_size) {
   const auto inv_voxel_size = static_cast<Scalar>(1.0 / voxel_size);
   // the default allocator mallocs once per voxel, pmr cuts that to a handful of arena chunks
   std::pmr::monotonic_buffer_resource arena;
   std::pmr::unordered_map<Eigen::Vector3i, Eigen::Vector3s, VoxelHash> grid{&arena};
-  grid.reserve(points.size());
-  std::for_each(points.cbegin(), points.cend(),
-                [&](const auto& point) { grid.try_emplace(point_to_voxel(point, inv_voxel_size), point); });
+  std::size_t point_count = 0;
+  for (const Vector3sVector& points : clouds) {
+    point_count += points.size();
+  }
+  grid.reserve(point_count);
+  for (const Vector3sVector& points : clouds) {
+    std::for_each(points.cbegin(), points.cend(),
+                  [&](const auto& point) { grid.try_emplace(point_to_voxel(point, inv_voxel_size), point); });
+  }
   std::vector<Eigen::Vector3s> downsampled;
   downsampled.reserve(grid.size());
   std::for_each(grid.cbegin(), grid.cend(),

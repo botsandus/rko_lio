@@ -83,7 +83,7 @@ void ThreadedNode::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu
     while (lidar_buffer.empty() && imu_buffer.back().time - imu_buffer.front().time > MAX_IMU_BUFFER_SPAN) {
       imu_buffer.pop();
     }
-    atomic_can_process = !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().timestamps.max;
+    atomic_can_process = !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
   }
   if (atomic_can_process) {
     sync_condition_variable.notify_one();
@@ -102,7 +102,7 @@ void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstShar
       return process_lidar_msg(lidar_msg);
     }();
     scan.arrival = arrival;
-    scan.transport = arrival_node_clock - scan.timestamps.max;
+    scan.transport = arrival_node_clock - scan.end();
     enqueue_scan(std::move(scan));
   } catch (const core::InputError& ex) {
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
@@ -130,25 +130,25 @@ void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstShar
       return process_lidar_msg(lidar_msg);
     }();
     scan.arrival = arrival;
-    scan.transport = arrival_node_clock - scan.timestamps.max;
-    if (in.fragments.is_fragment(core::to_seconds<core::Scalar>(scan.timestamps.max - scan.timestamps.min),
-                                 static_cast<core::Scalar>(scan.points.size()))) {
+    scan.transport = arrival_node_clock - scan.end();
+    if (in.fragments.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
+                                 static_cast<core::Scalar>(scan.point_count()))) {
       RCLCPP_WARN_STREAM(node->get_logger(),
-                         "Dropping a LiDAR scan fragment of " << scan.points.size() << " points from " << in.topic);
-      record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.points.size()});
+                         "Dropping a LiDAR scan fragment of " << scan.point_count() << " points from " << in.topic);
+      record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.point_count()});
       return;
     }
     {
       UTL_PROFILER_SCOPE("rko_lio: merge, to base frame");
-      for (Eigen::Vector3s& point : scan.points) {
+      for (Eigen::Vector3s& point : scan.points.front()) {
         point = *in.lidar2base * point;
       }
     }
     if (!revolution_origin) {
-      revolution_origin = scan.timestamps.max;
+      revolution_origin = scan.end();
     }
     const std::int64_t revolution =
-        std::llround(core::to_seconds(scan.timestamps.max - *revolution_origin) / core::to_seconds(LIDAR_PERIOD));
+        std::llround(core::to_seconds(scan.end() - *revolution_origin) / core::to_seconds(LIDAR_PERIOD));
     std::vector<std::optional<LidarScan>>& slots = open_revolutions[revolution];
     slots.resize(merge_inputs.size());
     if (revolution <= last_merged_revolution || slots[input]) {
@@ -156,7 +156,7 @@ void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstShar
                                                  << in.topic
                                                  << (slots[input] ? ": a second one in one revolution"
                                                                   : ": its revolution was merged without it"));
-      record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.points.size()});
+      record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.point_count()});
       if (revolution <= last_merged_revolution) {
         open_revolutions.erase(revolution);
       }
@@ -189,8 +189,9 @@ void ThreadedNode::merge_ready_revolutions() {
 }
 
 void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots) {
-  UTL_PROFILER_SCOPE("rko_lio: merge, concatenate");
-  LidarScan merged{.timestamps = {.min = core::Nsec::max(), .max = core::Nsec::min()}};
+  UTL_PROFILER_SCOPE("rko_lio: merge revolution");
+  LidarScan merged;
+  core::Nsec start = core::Nsec::max();
   core::Nsec first_end = core::Nsec::max();
   core::Nsec last_end = core::Nsec::min();
   std::string missing;
@@ -200,24 +201,26 @@ void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots
       continue;
     }
     LidarScan& scan = *slots[input];
-    merged.timestamps.min = std::min(merged.timestamps.min, scan.timestamps.min);
-    merged.timestamps.max = std::max(merged.timestamps.max, scan.timestamps.max);
-    merged.timestamps.per_point.insert(merged.timestamps.per_point.end(), scan.timestamps.per_point.begin(),
-                                       scan.timestamps.per_point.end());
-    merged.points.insert(merged.points.end(), scan.points.begin(), scan.points.end());
-    first_end = std::min(first_end, scan.timestamps.max);
-    last_end = std::max(last_end, scan.timestamps.max);
+    start = std::min(start, scan.start());
+    first_end = std::min(first_end, scan.end());
+    last_end = std::max(last_end, scan.end());
+    merged.timestamps.push_back(std::move(scan.timestamps.front()));
+    merged.points.push_back(std::move(scan.points.front()));
+  }
+  for (core::Timestamps& timestamps : merged.timestamps) {
+    timestamps.min = start;
+    timestamps.max = last_end;
   }
   // from the scan end until the merge exists, the wait for every lidar included; queue then holds only the backlog
   merged.arrival = std::chrono::steady_clock::now();
-  merged.transport = utils::to_ns(node->now()) - merged.timestamps.max;
+  merged.transport = utils::to_ns(node->now()) - merged.end();
   if (last_end - first_end > MAX_PHASE_SPREAD) {
     const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
     const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_PHASE_SPREAD).count();
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping unsynchronised lidar scans: their ends differ by "
                                                 << spread_ms << " ms, more than the " << max_spread_ms
                                                 << " ms of phase-locked lidars");
-    record_scan(merged, std::chrono::steady_clock::now(), ScanStatus::unsynced, {.input_points = merged.points.size()});
+    record_scan(merged, std::chrono::steady_clock::now(), ScanStatus::unsynced, {.input_points = merged.point_count()});
     if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
       RCLCPP_FATAL(
           node->get_logger(),
@@ -247,7 +250,7 @@ void ThreadedNode::enqueue_scan(LidarScan scan) {
       lidar_buffer.pop();
     }
     lidar_buffer.push(std::move(scan));
-    atomic_can_process = !imu_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().timestamps.max;
+    atomic_can_process = !imu_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
   }
   if (atomic_can_process) {
     sync_condition_variable.notify_one();
@@ -270,23 +273,25 @@ void ThreadedNode::registration_loop() {
     lidar_buffer.pop();
     const auto process_start = std::chrono::steady_clock::now();
     registration_busy = true;
-    const core::Nsec end_stamp = scan.timestamps.max;
+    const core::Nsec end_stamp = scan.end();
     for (; !imu_buffer.empty() && imu_buffer.front().time < end_stamp; imu_buffer.pop()) {
       const core::ImuControl& imu_data = imu_buffer.front();
       lio->add_imu_measurement(extrinsic_imu2base, imu_data);
     }
     // check if there are more messages buffered already
     atomic_can_process =
-        !imu_buffer.empty() && !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().timestamps.max;
+        !imu_buffer.empty() && !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
     buffer_lock.unlock(); // we dont touch the buffers anymore
 
     try {
-      const core::Vector3sVector deskewed_scan = register_scan_locked(std::move(scan.points), scan.timestamps);
+      const std::vector<core::Vector3sVector> deskewed_scan =
+          register_scan_locked(std::move(scan.points), scan.timestamps);
       if (!deskewed_scan.empty()) {
         // TODO: first scan is skipped and an empty scan is returned. improve how we handle this
         publish_tf(lio->lidar_state);
         publish_lidar_outputs(deskewed_scan);
       }
+      queue_poses_for_results();
       record_scan(scan, process_start, deskewed_scan.empty() ? ScanStatus::skipped : ScanStatus::ok, lio->scan_stats);
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
@@ -314,8 +319,8 @@ void ThreadedNode::record_scan(const LidarScan& scan,
   if (!scan_metrics_publisher && !dump_results) {
     return;
   }
-  const std::int64_t scan_end = scan.timestamps.max.count();
-  const std::int64_t duration = (scan.timestamps.max - scan.timestamps.min).count();
+  const std::int64_t scan_end = scan.end().count();
+  const std::int64_t duration = (scan.end() - scan.start()).count();
   const std::int64_t transport = scan.transport.count();
   const std::int64_t queue = ns_between(scan.arrival, process_start);
   const std::int64_t process = ns_between(process_start, std::chrono::steady_clock::now());
