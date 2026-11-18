@@ -33,8 +33,15 @@
 namespace {
 using namespace rko_lio::core;
 
+// one transform per distinct point stamp, with slots to spare over a scan's distinct stamps so few collide
 constexpr unsigned CACHE_BITS = 12U;
 constexpr std::size_t CACHE_SIZE = std::size_t{1} << CACHE_BITS;
+// 2^64 / golden ratio (Fibonacci hashing): regularly spaced stamps spread evenly over the slots
+constexpr std::uint64_t FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15ULL;
+
+std::size_t cache_slot(const Nsec stamp) {
+  return (static_cast<std::uint64_t>(stamp.count()) * FIBONACCI_MULTIPLIER) >> (64U - CACHE_BITS);
+}
 
 struct CachedTransform {
   Nsec stamp;
@@ -105,16 +112,14 @@ void deskew_scan(Vector3sVector& scan,
     return Eigen::Vector3s(start2reference_rotation * (R_times_p + exp.V_times_rho) + start2reference_translation);
   };
 
-  // direct-mapped by a Fibonacci hash of the stamp; after as many misses as entries the stamps are not repeating, and
-  // the remaining points go one by one
+  // after as many misses as slots the stamps are not repeating: the remaining points go one by one
   std::vector<CachedTransform> cache(CACHE_SIZE,
                                      {.stamp = Nsec::min(), .reference_T_lidar = Eigen::Matrix<Scalar, 3, 4>::Zero()});
   std::size_t misses = 0;
   auto point = scan.begin();
   auto timestamp = timestamps.per_point.cbegin();
   for (; point != scan.end() && misses < CACHE_SIZE; ++point, ++timestamp) {
-    CachedTransform& entry =
-        cache[(static_cast<std::uint64_t>(timestamp->count()) * 0x9E3779B97F4A7C15ULL) >> (64U - CACHE_BITS)];
+    CachedTransform& entry = cache[cache_slot(*timestamp)];
     if (entry.stamp != *timestamp) {
       ++misses;
       entry = {.stamp = *timestamp, .reference_T_lidar = reference_T_lidar_at(*timestamp)};
