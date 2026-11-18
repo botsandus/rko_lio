@@ -195,12 +195,15 @@ void ThreadedNode::merge_ready_payloads() {
       merged.timestamps.push_back(std::move(scan.timestamps.front()));
       merged.points.push_back(std::move(scan.points.front()));
       merged.lidar2base.push_back(scan.lidar2base.front());
+      if (scan.ready > merged.ready) {
+        merged.arrival = scan.arrival;
+        merged.ready = scan.ready;
+      }
     }
     if (merged.points.empty()) {
       continue;
     }
     // upstream includes the wait for the last lidar
-    merged.arrival = merged.ready = std::chrono::steady_clock::now();
     merged.upstream = utils::to_ns(node->now()) - merged.end();
     if (last_end - first_end > MAX_PHASE_SPREAD) {
       const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();

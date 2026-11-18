@@ -59,7 +59,9 @@ struct LidarPayload {
   std::vector<core::Vector3sVector> points;
   // per cloud: from its lidar's frame, which its points are in, to the base frame
   std::vector<Sophus::SE3s> lidar2base;
-  core::Nsec upstream{0};                        // node clock on entering rko_lio's callback minus the last point stamp
+  // node clock minus the payload end, on entering rko_lio's callback, or merging, at the merge
+  core::Nsec upstream{0};
+  // merging: arrival and ready of the scan that completes the payload
   std::chrono::steady_clock::time_point arrival; // entering rko_lio's callback
   std::chrono::steady_clock::time_point ready;   // points converted from the message
 
