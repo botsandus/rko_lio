@@ -16,10 +16,6 @@ invert_odom_tf: false
 publish_odom: true  # false: no odometry or reset count is published
 publish_odom_tf: true  # false: the odometry's tf is not broadcast
 publish_metrics: false  # each scan's statistics on rko_lio/scan_metrics (Float64MultiArray, fields in its layout label)
-# dump_results: false  # true: <results_dir>/<run_name>_<index>/ gets config.yaml at start, and each pose (TUM) and scan's statistics (CSV) appended as it runs
-# results_dir: results
-# run_name: rko_lio_run
-# write_interval_s: 10  # how often the poses and statistics are appended; the rest is written at exit
 # reset_on_registration_error: false
 publish_local_map: true
 map_topic: /rko_lio/local_map

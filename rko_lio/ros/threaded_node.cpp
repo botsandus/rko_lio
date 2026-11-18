@@ -28,14 +28,11 @@
 #include <UTL/profiler.hpp>
 // stl
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <format>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 
 namespace {
 using namespace std::literals;
@@ -48,9 +45,6 @@ constexpr rko_lio::core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
 constexpr rko_lio::core::Nsec MAX_PHASE_SPREAD = 5ms;
 constexpr rko_lio::core::Nsec LIDAR_PERIOD = 100ms;
 constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
-
-constexpr std::array<std::string_view, 6> SCAN_STATUS_NAMES = {
-    "ok", "skipped", "buffer_full", "input_error", "registration_error", "unsynced"};
 
 std::int64_t ns_between(const std::chrono::steady_clock::time_point from,
                         const std::chrono::steady_clock::time_point to) {
@@ -227,7 +221,6 @@ void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots
           "%d revolutions in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
           "Exiting.",
           consecutive_unsynced);
-      stop_results_writer();
       throw std::runtime_error("lidar_topics: the lidars are not phase-locked");
     }
     return;
@@ -291,7 +284,6 @@ void ThreadedNode::registration_loop() {
         publish_tf(lio->lidar_state);
         publish_lidar_outputs(deskewed_scan);
       }
-      queue_poses_for_results();
       record_scan(scan, process_start, deskewed_scan.empty() ? ScanStatus::skipped : ScanStatus::ok, lio->scan_stats);
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
@@ -303,7 +295,6 @@ void ThreadedNode::registration_loop() {
         reset_odometry();
       } else {
         RCLCPP_WARN(node->get_logger(), "Set reset_on_registration_error:=true to reset odometry and continue.");
-        stop_results_writer(); // the rethrow terminates without unwinding
         throw;
       }
     }
@@ -316,7 +307,7 @@ void ThreadedNode::record_scan(const LidarScan& scan,
                                const std::chrono::steady_clock::time_point process_start,
                                const ScanStatus status,
                                const core::ScanStats& stats) {
-  if (!scan_metrics_publisher && !dump_results) {
+  if (!scan_metrics_publisher) {
     return;
   }
   const std::int64_t scan_end = scan.end().count();
@@ -324,35 +315,25 @@ void ThreadedNode::record_scan(const LidarScan& scan,
   const std::int64_t transport = scan.transport.count();
   const std::int64_t queue = ns_between(scan.arrival, process_start);
   const std::int64_t process = ns_between(process_start, std::chrono::steady_clock::now());
-  if (scan_metrics_publisher) { // scan_end_ns as a double is rounded to 256 ns; the other values are exact
-    std_msgs::msg::Float64MultiArray msg;
-    msg.layout.dim.resize(1);
-    msg.layout.dim[0].label = std::string(SCAN_STATISTICS_FIELDS);
-    msg.data = {static_cast<double>(scan_end),
-                static_cast<double>(duration),
-                static_cast<double>(transport),
-                static_cast<double>(queue),
-                static_cast<double>(process),
-                static_cast<double>(status),
-                static_cast<double>(stats.input_points),
-                static_cast<double>(stats.keypoints),
-                static_cast<double>(stats.imu_samples),
-                static_cast<double>(stats.icp_iterations),
-                static_cast<double>(stats.correspondences),
-                static_cast<double>(stats.icp_cost)};
-    msg.layout.dim[0].size = static_cast<std::uint32_t>(msg.data.size());
-    msg.layout.dim[0].stride = msg.layout.dim[0].size;
-    scan_metrics_publisher->publish(msg);
-  }
-  if (!dump_results) {
-    return;
-  }
-  std::string row =
-      std::format("{},{},{},{},{},{},{},{},{},{},{},{}\n", scan_end, duration, transport, queue, process,
-                  SCAN_STATUS_NAMES[static_cast<std::size_t>(status)], stats.input_points, stats.keypoints,
-                  stats.imu_samples, stats.icp_iterations, stats.correspondences, stats.icp_cost);
-  const std::scoped_lock lock(results_mutex);
-  pending_scans += row;
+  // scan_end_ns as a double is rounded to 256 ns; the other values are exact
+  std_msgs::msg::Float64MultiArray msg;
+  msg.layout.dim.resize(1);
+  msg.layout.dim[0].label = std::string(SCAN_STATISTICS_FIELDS);
+  msg.data = {static_cast<double>(scan_end),
+              static_cast<double>(duration),
+              static_cast<double>(transport),
+              static_cast<double>(queue),
+              static_cast<double>(process),
+              static_cast<double>(status),
+              static_cast<double>(stats.input_points),
+              static_cast<double>(stats.keypoints),
+              static_cast<double>(stats.imu_samples),
+              static_cast<double>(stats.icp_iterations),
+              static_cast<double>(stats.correspondences),
+              static_cast<double>(stats.icp_cost)};
+  msg.layout.dim[0].size = static_cast<std::uint32_t>(msg.data.size());
+  msg.layout.dim[0].stride = msg.layout.dim[0].size;
+  scan_metrics_publisher->publish(msg);
 }
 
 ThreadedNode::~ThreadedNode() {

@@ -74,7 +74,6 @@ public:
   std::optional<core::Nsec> revolution_origin;
   std::int64_t last_merged_revolution = std::numeric_limits<std::int64_t>::min();
   int consecutive_unsynced = 0;
-  // stops before BaseNode's results writer, which then writes what is left
   std::jthread registration_thread;
 
   ThreadedNode() = delete;

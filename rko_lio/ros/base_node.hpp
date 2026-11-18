@@ -27,12 +27,9 @@
 // stl
 #include <atomic>
 #include <chrono>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -74,9 +71,9 @@ struct LidarScan {
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
 
-// A scan's statistics, as dump_results' CSV header and the published message's layout label. Times in ns: the scan's
-// last point (sensor clock) and duration; transport: its arrival on the node clock minus its last point; queue and
-// process: the steady clock from arrival to the start of its processing, and the processing.
+// A scan's statistics, as the published message's layout label. Times in ns: the scan's last point (sensor clock) and
+// duration; transport: its arrival on the node clock minus its last point; queue and process: the steady clock from
+// arrival to the start of its processing, and the processing.
 constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,transport_ns,queue_ns,process_ns,"
                                                     "status,input_points,keypoints,imu_samples,icp_iterations,"
                                                     "correspondences,icp_cost";
@@ -111,14 +108,9 @@ public:
   std::string odom_topic = "rko_lio/odom";
   std::string map_topic = "rko_lio/local_map";
   std::string deskewed_scan_topic = "rko_lio/deskewed_scan";
-  std::string results_dir = "results";
-  std::string run_name = "rko_lio_run";
 
   std::mutex local_map_mutex;
 
-  // results_dir/run_name_<index>: config.yaml at start; each registered pose (TUM) and, from a threaded node, each
-  // scan's statistics (CSV) appended every write_interval and at exit
-  bool dump_results = false;
   bool publish_odom = true;    // false: the odometry and the reset count are not published
   bool publish_odom_tf = true; // false: the odometry's tf is not broadcast
   bool invert_odom_tf = false;
@@ -133,15 +125,6 @@ public:
   std::atomic<bool> atomic_reset_requested = false;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service;
   std::jthread map_publish_thread;
-
-  std::chrono::seconds write_interval{10};
-  std::mutex results_mutex;
-  std::string pending_poses;
-  std::string pending_scans;
-  std::ofstream poses_file;
-  std::ofstream scans_file;
-  // last, so it stops first and writes what is pending
-  std::jthread results_write_thread;
 
   BaseNode() = delete;
   BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
@@ -161,17 +144,11 @@ public:
 
   void publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const;
 
-  // after publishing, so the pose goes out first: moves the core's poses to the pending results
-  void queue_poses_for_results();
-
   void publish_odometry(const core::State& state,
                         const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr& publisher) const;
   void publish_tf(const core::State& state) const;
   void publish_lidar_accel(const core::State& state) const;
   void publish_map_loop();
-  void open_results(); // the results folder, its config.yaml and the two appended files, and their writer
-  void write_results_loop(const std::stop_token& stop);
-  void stop_results_writer(); // writes what is pending; for exits that skip the destructors
 
   void reset_odometry();
 

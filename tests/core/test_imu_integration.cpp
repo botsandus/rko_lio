@@ -273,7 +273,7 @@ TEST_CASE("register_scan resets imu_state to optimized pose", "[imu_integration]
                        .per_point = TimestampVector(cloud.size(), ns_from_seconds(SECOND_SCAN_END))};
   lio.register_scan(cloud, ts2);
 
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
   REQUIRE(approx_equal(lio.imu_state.pose, lio.lidar_state.pose, EXACT_TOL));
   REQUIRE_THAT(to_seconds(lio.imu_state.time), WithinAbs(to_seconds(lio.lidar_state.time), 1e-12));
   REQUIRE(approx_equal(lio.imu_state.linear_velocity, lio.lidar_state.linear_velocity, EXACT_TOL));

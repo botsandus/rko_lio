@@ -34,7 +34,6 @@
 
 #include <tbb/task_arena.h>
 
-#include <deque>
 #include <span>
 
 /** Core namespace containing LIO data structures and state definitions. */
@@ -149,13 +148,6 @@ public:
    *  `config.initialization_phase` off. */
   void restart();
 
-  /** How many registered poses `poses_with_timestamps` keeps; the oldest goes first. */
-  static constexpr std::size_t POSE_WINDOW_SIZE = 600;
-
-  /** The last `POSE_WINDOW_SIZE` registered scan poses with their timestamps. A caller that keeps the trajectory moves
-   *  them out as they come. */
-  std::deque<std::pair<Nsec, Sophus::SE3s>> poses_with_timestamps;
-
   /** Base-frame state propagated from IMU measurements. Runs ahead of `lidar_state` between scans; reset to the
    *  optimized lidar pose after each successful registration. Used for gravity compensation and for publishing
    *  IMU-rate odometry from the ROS wrapper.
@@ -169,14 +161,11 @@ private:
    */
   void initialize(const Nsec lidar_time);
 
-  /** First-scan path: stamps state, optionally seeds the map, logs the pose. */
+  /** First-scan path: stamps state, optionally seeds the map. */
   std::vector<Vector3sVector> bootstrap_first_scan(std::vector<Vector3sVector> scan, const Nsec current_lidar_time);
 
   /** Motion prior for the coming scan, from the IMU interval average */
   MotionPrior motion_prior_from_imu(const Nsec current_lidar_time);
-
-  /** Appends the lidar state's time and pose to `poses_with_timestamps`, dropping its oldest beyond the window. */
-  void record_pose();
 
   /** True if odometry initialization has been completed. */
   bool initialized_ = false;

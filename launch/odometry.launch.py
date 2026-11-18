@@ -276,22 +276,6 @@ configurable_parameters = [
         "description": "YAML config file to load parameters from",
     },
     {
-        "name": "dump_results",
-        "default": "false",
-        "type": "bool",
-        "description": "Write the odometry configuration (at start), and its trajectory and per-scan statistics (appended every write_interval_s, and at exit) to a <results_dir>/<run_name>_<index> folder. The index is incremented automatically to prevent accidental overwrites.",
-    },
-    {
-        "name": "results_dir",
-        "default": "results",
-        "description": "The folder dump_results writes into. See `dump_results` which has to be true.",
-    },
-    {
-        "name": "run_name",
-        "default": "rko_lio_run",
-        "description": "Run name, used when saving results to <results_dir>. See `dump_results` which has to be true.",
-    },
-    {
         "launch_only": True,
         "name": "rviz",
         "default": "false",

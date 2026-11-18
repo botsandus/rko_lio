@@ -26,35 +26,13 @@
 #include "rko_lio/ros/utils/spdlog_sink.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
 // other
-#include <condition_variable>
-#include <format>
-#include <iomanip>
-#include <limits>
 #include <optional>
 #include <rclcpp/version.h>
 #include <spdlog/spdlog.h>
-#include <sstream>
 #include <stdexcept>
 
 namespace {
 using namespace std::literals;
-
-std::string config_to_yaml(const rko_lio::core::LIO::Config& config) {
-  std::ostringstream ss;
-  ss << std::boolalpha << std::setprecision(std::numeric_limits<rko_lio::core::Scalar>::max_digits10);
-  ss << "deskew: " << config.deskew << "\n"
-     << "max_iterations: " << config.max_iterations << "\n"
-     << "voxel_size: " << config.voxel_size << "\n"
-     << "max_range: " << config.max_range << "\n"
-     << "min_range: " << config.min_range << "\n"
-     << "convergence_criterion: " << config.convergence_criterion << "\n"
-     << "max_correspondence_distance: " << config.max_correspondence_distance << "\n"
-     << "max_num_threads: " << config.max_num_threads << "\n"
-     << "initialization_phase: " << config.initialization_phase << "\n"
-     << "double_downsample: " << config.double_downsample << "\n"
-     << "flat: " << config.flat << "\n";
-  return ss.str();
-}
 } // namespace
 
 namespace rko_lio::ros {
@@ -199,19 +177,6 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
         response->message = "The odometry resets before its next scan.";
       });
 
-  // disk logging
-  dump_results = node->declare_parameter<bool>("dump_results", dump_results);
-  results_dir = node->declare_parameter<std::string>("results_dir", results_dir);
-  run_name = node->declare_parameter<std::string>("run_name", run_name);
-  if (dump_results) {
-    write_interval = std::chrono::seconds(
-        node->declare_parameter<int>("write_interval_s", static_cast<int>(write_interval.count())));
-    if (write_interval < 1s) {
-      throw std::invalid_argument("write_interval_s must be at least 1 s.");
-    }
-    open_results();
-  }
-
   if (publish_local_map) { // last: a throw above must not leave this thread running, and it reads lio
     map_publish_thread = std::jthread([this] { publish_map_loop(); });
   }
@@ -308,19 +273,6 @@ std::vector<core::Vector3sVector> BaseNode::register_scan_locked(std::vector<cor
   return lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
 }
 
-void BaseNode::queue_poses_for_results() {
-  if (dump_results) { // the poses leave the core's window only here, to the poses file
-    const std::scoped_lock results_lock(results_mutex);
-    for (const auto& [time, pose] : lio->poses_with_timestamps) {
-      const Eigen::Vector3s& t = pose.translation();
-      const Eigen::Quaternions& q = pose.so3().unit_quaternion();
-      pending_poses += std::format("{}.{:09} {} {} {} {} {} {} {}\n", time.count() / 1'000'000'000,
-                                   time.count() % 1'000'000'000, t.x(), t.y(), t.z(), q.x(), q.y(), q.z(), q.w());
-    }
-    lio->poses_with_timestamps.clear();
-  }
-}
-
 void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const {
   publish_odometry(lio->lidar_state, odom_publisher);
   if (publish_lidar_acceleration) {
@@ -415,63 +367,6 @@ void BaseNode::reset_odometry() {
   if (forced_init_off) {
     RCLCPP_WARN(node->get_logger(),
                 "initialization_phase was enabled; it is off after reset because static start is not guaranteed.");
-  }
-}
-
-void BaseNode::open_results() {
-  std::filesystem::create_directories(results_dir);
-  int index = 0;
-  std::filesystem::path output_dir = std::filesystem::path(results_dir) / (run_name + "_" + std::to_string(index));
-  while (std::filesystem::exists(output_dir)) {
-    ++index;
-    output_dir = std::filesystem::path(results_dir) / (run_name + "_" + std::to_string(index));
-  }
-  std::filesystem::create_directory(output_dir);
-  std::ofstream config_file(output_dir / "config.yaml");
-  const std::filesystem::path poses_path = output_dir / (run_name + "_tum_" + std::to_string(index) + ".txt");
-  const std::filesystem::path scans_path = output_dir / (run_name + "_scans_" + std::to_string(index) + ".csv");
-  poses_file.open(poses_path, std::ios::app);
-  scans_file.open(scans_path, std::ios::app);
-  if (!(config_file << config_to_yaml(lio->config) << std::flush) || !poses_file ||
-      !(scans_file << SCAN_STATISTICS_FIELDS << "\n"
-                   << std::flush)) {
-    throw std::runtime_error("Cannot write the results files in " + output_dir.string());
-  }
-  results_write_thread = std::jthread([this](const std::stop_token& stop) { write_results_loop(stop); });
-  RCLCPP_INFO_STREAM(node->get_logger(), "Writing the configuration, poses and scan statistics to "
-                                             << output_dir.string() << ", every " << write_interval.count() << " s");
-}
-
-void BaseNode::stop_results_writer() {
-  if (results_write_thread.joinable()) {
-    results_write_thread.request_stop();
-    results_write_thread.join();
-  }
-}
-
-void BaseNode::write_results_loop(const std::stop_token& stop) {
-  std::condition_variable_any wakeup; // only the stop request wakes it early
-  bool failed = false;
-  while (true) {
-    std::string poses;
-    std::string scans;
-    {
-      std::unique_lock lock(results_mutex);
-      wakeup.wait_for(lock, stop, write_interval, [] { return false; });
-      poses.swap(pending_poses);
-      scans.swap(pending_scans);
-    }
-    if (!failed) {
-      poses_file << poses << std::flush;
-      scans_file << scans << std::flush;
-      failed = !poses_file || !scans_file;
-      if (failed) {
-        RCLCPP_ERROR(node->get_logger(), "Writing the results files failed; nothing more is written.");
-      }
-    }
-    if (stop.stop_requested()) {
-      return;
-    }
   }
 }
 

@@ -112,15 +112,13 @@ TEST_CASE("First scan: empty map -> populated, single pose at lidar_state.time",
   const auto ts = linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END);
 
   REQUIRE(lio.map.empty());
-  REQUIRE(lio.poses_with_timestamps.empty());
+  REQUIRE(lio.lidar_state.time == Nsec{0});
 
   lio.register_scan(cloud, ts);
 
   REQUIRE_FALSE(lio.map.empty());
-  REQUIRE(lio.poses_with_timestamps.size() == 1);
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
-  REQUIRE_THAT(to_seconds(lio.poses_with_timestamps[0].first), WithinAbs(FIRST_SCAN_END, 1e-9));
 }
 
 TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[register_scan]") {
@@ -131,7 +129,7 @@ TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[regis
   feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
   lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
 
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
   REQUIRE(lio.lidar_state.pose.translation().norm() < 1e-3);
   REQUIRE(lio.lidar_state.pose.so3().log().norm() < 1e-3);
 }
@@ -172,7 +170,7 @@ TEST_CASE("deskew = false: register_scan still produces a valid pose", "[registe
   feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
   lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
 
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
   REQUIRE(lio.lidar_state.pose.translation().norm() < 1e-3);
   REQUIRE(lio.lidar_state.pose.so3().log().norm() < 1e-3);
 }
@@ -251,7 +249,7 @@ TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[r
   }
   REQUIRE_NOTHROW(lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_START)));
 
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_START, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, ground_truth, 1e-2));
 }
 
@@ -286,7 +284,7 @@ TEST_CASE("Gap in the lidar stream: second scan has real per-point spread, not i
 
   REQUIRE_NOTHROW(lio.register_scan(cloud2, ts2));
 
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_SPAN_END, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, ground_truth, 1e-2));
 }
 
@@ -415,7 +413,6 @@ TEST_CASE("register_scan: zero correspondences throws RegistrationError", "[regi
   const auto cloud = make_hollow_cube();
   lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
   const auto pose_before = lio.lidar_state.pose;
-  const auto n_poses = lio.poses_with_timestamps.size();
   const auto time_before = lio.lidar_state.time;
 
   feed_static_imu(lio, FIRST_SCAN_END, SECOND_SCAN_END, 10);
@@ -426,7 +423,6 @@ TEST_CASE("register_scan: zero correspondences throws RegistrationError", "[regi
 
   REQUIRE_THROWS_AS(lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END)), RegistrationError);
   REQUIRE(approx_equal(lio.lidar_state.pose, pose_before, EXACT_TOL));
-  REQUIRE(lio.poses_with_timestamps.size() == n_poses);
   REQUIRE(lio.lidar_state.time == time_before);
 }
 
@@ -453,7 +449,6 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   lio.restart();
   REQUIRE(lio.reset_count == 2);
   REQUIRE(lio.map.empty());
-  REQUIRE(lio.poses_with_timestamps.size() == 1);
   REQUIRE(lio.lidar_state.time == Nsec{0});
   REQUIRE(lio.interval_stats.imu_count == 0);
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
@@ -461,8 +456,7 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   constexpr double third_scan_end = SECOND_SCAN_END + DT;
   lio.register_scan(cloud, instant_timestamps(cloud.size(), third_scan_end));
   REQUIRE_FALSE(lio.map.empty());
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
-  REQUIRE(approx_equal(lio.poses_with_timestamps.back().second, Sophus::SE3s{}, EXACT_TOL));
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(third_scan_end, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
 }
 
@@ -477,10 +471,10 @@ TEST_CASE("A scan that does not end after the previous one, or a fragment of a s
   REQUIRE(
       lio.register_scan(fragment, linspace_timestamps(fragment.size(), FIRST_SCAN_END + 0.098, FIRST_SCAN_END + 0.1))
           .empty());
-  REQUIRE(lio.poses_with_timestamps.size() == 1);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END, 1e-9));
 
   REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), FIRST_SCAN_END, SECOND_SCAN_END)).empty());
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
 }
 
 TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped", "[register_scan]") {
@@ -489,24 +483,10 @@ TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped"
   lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   REQUIRE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.009, FIRST_SCAN_END + 0.009)).empty());
-  REQUIRE(lio.poses_with_timestamps.size() == 1);
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END, 1e-9));
 
   REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.011, FIRST_SCAN_END + 0.011)).empty());
-  REQUIRE(lio.poses_with_timestamps.size() == 2);
-}
-
-TEST_CASE("poses_with_timestamps keeps the last POSE_WINDOW_SIZE poses", "[register_scan]") {
-  LIO lio((LIO::Config{}));
-  const auto cloud = make_hollow_cube();
-  const std::size_t n_scans = LIO::POSE_WINDOW_SIZE + 5;
-  for (std::size_t i = 0; i < n_scans; ++i) {
-    const double scan_end = FIRST_SCAN_END + 0.1 * static_cast<double>(i);
-    lio.register_scan(cloud, linspace_timestamps(cloud.size(), scan_end - 0.1, scan_end));
-  }
-  REQUIRE(lio.poses_with_timestamps.size() == LIO::POSE_WINDOW_SIZE);
-  REQUIRE_THAT(to_seconds(lio.poses_with_timestamps.front().first), WithinAbs(FIRST_SCAN_END + 0.5, 1e-6));
-  REQUIRE_THAT(to_seconds(lio.poses_with_timestamps.back().first),
-               WithinAbs(FIRST_SCAN_END + 0.1 * static_cast<double>(n_scans - 1), 1e-6));
+  REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END + 0.011, 1e-9));
 }
 
 TEST_CASE("restart keeps the IMU bias estimates", "[register_scan]") {

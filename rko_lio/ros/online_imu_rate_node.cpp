@@ -117,7 +117,6 @@ public:
       }
       publish_tf(lio->lidar_state);
       publish_lidar_outputs(deskewed_scan);
-      queue_poses_for_results();
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
     } catch (const core::RegistrationError& ex) {

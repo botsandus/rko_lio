@@ -204,8 +204,6 @@ LIO::LIO(const Config& config_)
 void LIO::initialize(const Nsec lidar_time) {
   if (interval_stats.imu_count == 0) {
     spdlog::warn("Cannot initialize. No imu measurements received.");
-    // lidar_state.time has the time from the previous lidar, which we didn't log if init_phase was on
-    record_pose();
     initialized_ = true;
     return;
   }
@@ -219,10 +217,6 @@ void LIO::initialize(const Nsec lidar_time) {
   }
   imu_state = lidar_state;
 
-  // lidar_state.time has the time from the previous lidar, which we didn't log if init_phase was on
-  record_pose();
-
-  // the pose for the current time gets logged at the end of register_scan in the typical fashion
   lidar_state.time = lidar_time;
   imu_state.time = lidar_time;
 
@@ -243,7 +237,6 @@ std::vector<Vector3sVector> LIO::bootstrap_first_scan(std::vector<Vector3sVector
   auto preproc = preprocess_scan(std::move(scan), config);
   if (!config.initialization_phase) {
     map.update(config.double_downsample ? preproc.map_points : preproc.keypoints, lidar_state.pose);
-    record_pose();
     spdlog::info("Odometry map frame initialized with first lidar scan.");
   }
   return std::move(preproc.filtered_scan);
@@ -494,8 +487,6 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
     map.update(map_input, lidar_state.pose);
   }
 
-  record_pose();
-
   return std::move(preproc_result.filtered_scan);
 }
 
@@ -518,12 +509,5 @@ void LIO::restart() {
   imu_state = {};
   interval_stats.reset();
   initialized_ = false;
-}
-
-void LIO::record_pose() {
-  poses_with_timestamps.emplace_back(lidar_state.time, lidar_state.pose);
-  if (poses_with_timestamps.size() > POSE_WINDOW_SIZE) {
-    poses_with_timestamps.pop_front();
-  }
 }
 } // namespace rko_lio::core
