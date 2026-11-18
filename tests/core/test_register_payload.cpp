@@ -484,7 +484,6 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   const auto cloud = make_hollow_cube();
 
   lio.restart();
-  REQUIRE(lio.reset_count == 1);
   REQUIRE_FALSE(lio.config.initialization_phase);
 
   register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
@@ -498,7 +497,6 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   REQUIRE_THROWS_AS(register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END)), RegistrationError);
 
   lio.restart();
-  REQUIRE(lio.reset_count == 2);
   REQUIRE(lio.map.empty());
   REQUIRE(lio.lidar_state.time == Nsec{0});
   REQUIRE(lio.interval_stats.imu_count == 0);

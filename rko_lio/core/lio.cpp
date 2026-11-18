@@ -499,7 +499,6 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
 }
 
 void LIO::restart() {
-  ++reset_count;
   config.initialization_phase = false;
   map.clear();
   lidar_state = {};

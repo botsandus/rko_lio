@@ -100,8 +100,6 @@ public:
   /** IMU measurement statistics since last LiDAR frame. */
   IntervalStats interval_stats;
 
-  /** How many times `reset()` has been called. */
-  std::size_t reset_count = 0;
   /** What the last payload given to `register_payload` had; its ICP fields stay zero if no ICP ran. */
   PayloadStats payload_stats;
 
