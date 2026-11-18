@@ -1,15 +1,13 @@
 #include "preprocess_payload.hpp"
 #include "voxel_down_sample.hpp"
 
-#include <cmath>
-
 namespace rko_lio::core {
 
 PreprocessingResult preprocess_payload(std::vector<Vector3sVector> clouds, const LIO::Config& config) {
   for (Vector3sVector& cloud : clouds) {
     std::erase_if(cloud, [&](const auto& point) {
       const Scalar point_range = point.norm();
-      return !std::isfinite(point_range) || point_range <= config.min_range || point_range >= config.max_range;
+      return point_range <= config.min_range || point_range >= config.max_range;
     });
   }
 

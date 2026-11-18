@@ -419,7 +419,7 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
     return bootstrap_first_payload(std::move(clouds), lidar2base, current_lidar_time);
   }
 
-  if (std::chrono::abs(current_lidar_time - lidar_state.time) > MAX_PAYLOAD_INTERVAL) {
+  if (current_lidar_time - lidar_state.time > MAX_PAYLOAD_INTERVAL) {
     // the imu prior below extrapolates across the gap, and falls back to constant velocity if the imu dropped out too
     spdlog::warn("{} seconds delta to the previous payload. Extrapolating the motion prior across it.",
                  to_seconds(current_lidar_time - lidar_state.time));

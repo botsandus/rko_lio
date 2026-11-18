@@ -13,7 +13,7 @@ else()
     OUTPUT
     ${CMAKE_BINARY_DIR}/utl_disabled/UTL/profiler.hpp
     CONTENT
-    "#pragma once\n#define UTL_PROFILER_DISABLE\n#define UTL_PROFILER_SCOPE(label)\n"
+    "#pragma once\n#define UTL_PROFILER_SCOPE(label)\n"
     @ONLY)
   add_library(UTL::include INTERFACE IMPORTED)
   target_include_directories(UTL::include INTERFACE ${CMAKE_BINARY_DIR}/utl_disabled)

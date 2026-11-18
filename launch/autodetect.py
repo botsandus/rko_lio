@@ -172,8 +172,8 @@ def resolve(graph, params):
         return found
 
     known_frames = graph.frames()
-    imu_frame = settle("imu_frame", lambda: graph.frame_id(imu_topic))
-    lidar_frame = settle("lidar_frame", lambda: graph.frame_id(lidar_topic))
+    imu_frame = graph.frame_id(imu_topic)
+    lidar_frame = graph.frame_id(lidar_topic)
     guessed = next((f for f in BASE_FRAME_CANDIDATES if f in known_frames), None)
     base_frame = guessed or lidar_frame
     found["base_frame"] = base_frame

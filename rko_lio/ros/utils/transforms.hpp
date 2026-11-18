@@ -27,7 +27,6 @@
 #include <Eigen/Core>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
-#include <rko_lio/core/error.hpp>
 #include <rko_lio/core/util.hpp>
 
 #include <optional>
@@ -38,7 +37,6 @@
 #include <tf2/exceptions.hpp>
 #include <tf2/time.hpp>
 #include <tf2_ros/buffer.hpp>
-#include <vector>
 
 namespace rko_lio::ros::utils {
 inline geometry_msgs::msg::Pose sophus_to_pose(const Sophus::SE3s& T) {

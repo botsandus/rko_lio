@@ -68,7 +68,7 @@ configurable_parameters = [
         "name": "autodetect",
         "default": "true",
         "type": "bool",
-        "description": "[EXPERIMENTAL] Fill in imu_topic, lidar_topic, the frames and base_frame from the running graph (online) or the bag (offline), whenever they were not given. Anything you specify is used as is.",
+        "description": "[EXPERIMENTAL] Fill in imu_topic, lidar_topic and base_frame from the running graph (online) or the bag (offline), whenever they were not given. Anything you specify is used as is.",
     },
     {
         "launch_only": True,
