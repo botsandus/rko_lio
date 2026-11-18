@@ -423,7 +423,10 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
     deskew_scan(scan, timestamps, scan_motion);
   }
   const std::size_t input_scan_size = scan.size();
-  auto preproc_result = preprocess_scan(std::move(scan), config);
+  auto preproc_result = [&] {
+    UTL_PROFILER_SCOPE("rko_lio: preprocess");
+    return preprocess_scan(std::move(scan), config);
+  }();
   scan_stats.keypoints = preproc_result.keypoints.size();
 
   if (preproc_result.keypoints.size() < 10) {
@@ -465,7 +468,10 @@ Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timesta
   // reset imu averages
   interval_stats.reset();
 
-  map.update(map_input, lidar_state.pose);
+  {
+    UTL_PROFILER_SCOPE("rko_lio: map update");
+    map.update(map_input, lidar_state.pose);
+  }
 
   record_pose();
 

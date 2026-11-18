@@ -97,7 +97,10 @@ void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstShar
     return;
   }
   try {
-    LidarScan scan = process_lidar_msg(lidar_msg);
+    LidarScan scan = [&] {
+      UTL_PROFILER_SCOPE("rko_lio: convert message");
+      return process_lidar_msg(lidar_msg);
+    }();
     scan.arrival = arrival;
     scan.transport = arrival_node_clock - scan.timestamps.max;
     enqueue_scan(std::move(scan));
@@ -122,7 +125,10 @@ void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstShar
     return;
   }
   try {
-    LidarScan scan = process_lidar_msg(lidar_msg);
+    LidarScan scan = [&] {
+      UTL_PROFILER_SCOPE("rko_lio: convert message");
+      return process_lidar_msg(lidar_msg);
+    }();
     scan.arrival = arrival;
     scan.transport = arrival_node_clock - scan.timestamps.max;
     if (in.fragments.is_fragment(core::to_seconds<core::Scalar>(scan.timestamps.max - scan.timestamps.min),
@@ -132,8 +138,11 @@ void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstShar
       record_scan(scan, std::chrono::steady_clock::now(), ScanStatus::skipped, {.input_points = scan.points.size()});
       return;
     }
-    for (Eigen::Vector3s& point : scan.points) {
-      point = *in.lidar2base * point;
+    {
+      UTL_PROFILER_SCOPE("rko_lio: merge, to base frame");
+      for (Eigen::Vector3s& point : scan.points) {
+        point = *in.lidar2base * point;
+      }
     }
     if (!revolution_origin) {
       revolution_origin = scan.timestamps.max;
@@ -180,6 +189,7 @@ void ThreadedNode::merge_ready_revolutions() {
 }
 
 void ThreadedNode::merge_revolution(std::vector<std::optional<LidarScan>>& slots) {
+  UTL_PROFILER_SCOPE("rko_lio: merge, concatenate");
   LidarScan merged{.timestamps = {.min = core::Nsec::max(), .max = core::Nsec::min()}};
   core::Nsec first_end = core::Nsec::max();
   core::Nsec last_end = core::Nsec::min();
