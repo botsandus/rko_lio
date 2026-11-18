@@ -270,7 +270,8 @@ std::vector<core::Vector3sVector> BaseNode::register_scan_locked(std::vector<cor
   if (publish_local_map) {
     lock.lock(); // map publish thread may access map simultaneously
   }
-  return lio->register_scan(extrinsic_lidar2base, std::move(scan), timestamps);
+  const std::vector<Sophus::SE3s> lidar2base(scan.size(), extrinsic_lidar2base);
+  return lio->register_scan(std::move(scan), timestamps, lidar2base);
 }
 
 void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const {

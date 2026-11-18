@@ -116,33 +116,16 @@ public:
   void add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuControl& raw_imu);
 
   /**
-   * Register a LiDAR scan, applying deskewing based on the initial motion guess
-   * and clipping points beyond valid range.
-   * @param scan Input raw point cloud.
-   * @param timestamps Absolute per-point timestamps, plus the scan's own min/max, as already
-   *   computed by process_timestamps.
-   * @return Deskewed and clipped point cloud.
-   */
-  Vector3sVector register_scan(Vector3sVector scan, const Timestamps& timestamps);
-
-  /**
-   * Register one scan given as several clouds, e.g. one per phase-locked lidar, without concatenating them.
-   * @param scan The clouds, in the base frame.
+   * Register one scan given as several clouds, e.g. one per phase-locked lidar, without concatenating them, applying
+   * deskewing based on the initial motion guess and clipping points beyond valid range.
+   * @param scan The clouds, each in its lidar's frame.
    * @param timestamps One entry per cloud: its per-point timestamps; every entry carries the whole scan's min/max.
-   * @return The deskewed and clipped clouds; empty if the scan was skipped.
-   */
-  std::vector<Vector3sVector> register_scan(std::vector<Vector3sVector> scan, std::span<const Timestamps> timestamps);
-
-  /**
-   * Register a scan whose clouds are in the lidar frame: the extrinsic calibration from lidar to base is applied first.
-   * @param extrinsic_lidar2base Extrinsic from lidar to base frame.
-   * @param scan The clouds, as for register_scan above.
-   * @param timestamps As for register_scan above.
+   * @param lidar2base One entry per cloud: the extrinsic from its lidar to the base frame.
    * @return The deskewed and clipped clouds, in the base frame; empty if the scan was skipped.
    */
-  std::vector<Vector3sVector> register_scan(const Sophus::SE3s& extrinsic_lidar2base,
-                                            std::vector<Vector3sVector> scan,
-                                            std::span<const Timestamps> timestamps);
+  std::vector<Vector3sVector> register_scan(std::vector<Vector3sVector> scan,
+                                            const std::span<const Timestamps> timestamps,
+                                            const std::span<const Sophus::SE3s> lidar2base);
 
   /** Restart, treating the next scan as if it were the first. Keeps the IMU bias estimates; forces
    *  `config.initialization_phase` off. */
@@ -161,8 +144,10 @@ private:
    */
   void initialize(const Nsec lidar_time);
 
-  /** First-scan path: stamps state, optionally seeds the map. */
-  std::vector<Vector3sVector> bootstrap_first_scan(std::vector<Vector3sVector> scan, const Nsec current_lidar_time);
+  /** First-scan path: stamps state, brings the clouds to the base frame without deskewing, optionally seeds the map. */
+  std::vector<Vector3sVector> bootstrap_first_scan(std::vector<Vector3sVector> scan,
+                                                   const std::span<const Sophus::SE3s> lidar2base,
+                                                   const Nsec current_lidar_time);
 
   /** Motion prior for the coming scan, from the IMU interval average */
   MotionPrior motion_prior_from_imu(const Nsec current_lidar_time);

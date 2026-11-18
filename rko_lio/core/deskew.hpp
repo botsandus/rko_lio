@@ -34,12 +34,16 @@
 namespace rko_lio::core {
 
 /**
- * Deskew a scan in place, referring every point to timestamps.max.
+ * Deskew a scan in place, from the lidar frame to the base frame at timestamps.max.
  *
  * @param scan Point cloud to deskew in place.
  * @param timestamps Absolute per-point timestamps, plus the scan's own min/max.
- * @param motion Motion prior spanning the scan.
+ * @param motion Motion prior of the base frame, spanning the scan.
+ * @param lidar2base Extrinsic from the lidar to the base frame.
  */
-void deskew_scan(Vector3sVector& scan, const Timestamps& timestamps, const MotionPrior& motion);
+void deskew_scan(Vector3sVector& scan,
+                 const Timestamps& timestamps,
+                 const MotionPrior& motion,
+                 const Sophus::SE3s& lidar2base);
 
 } // namespace rko_lio::core

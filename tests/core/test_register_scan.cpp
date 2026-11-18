@@ -2,7 +2,9 @@
 #include "rko_lio/core/error.hpp"
 #include "rko_lio/core/lio.hpp"
 #include "synthetic_clouds.hpp"
+#include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cmath>
 #include <cstdint>
@@ -21,7 +23,9 @@ using rko_lio::core::to_seconds;
 using rko_lio::core::Vector3sVector;
 using rko_lio::tests::approx_equal;
 using rko_lio::tests::EXACT_TOL;
+using rko_lio::tests::LOOSE_TOL;
 using rko_lio::tests::make_hollow_cube;
+using rko_lio::tests::register_cloud;
 
 namespace {
 inline Nsec ns_from_seconds(double s) { return Nsec(static_cast<int64_t>(std::llround(s * 1e9))); }
@@ -114,7 +118,7 @@ TEST_CASE("First scan: empty map -> populated, single pose at lidar_state.time",
   REQUIRE(lio.map.empty());
   REQUIRE(lio.lidar_state.time == Nsec{0});
 
-  lio.register_scan(cloud, ts);
+  register_cloud(lio, cloud, ts);
 
   REQUIRE_FALSE(lio.map.empty());
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END, 1e-9));
@@ -125,9 +129,9 @@ TEST_CASE("Identity registration: same cloud twice -> pose ~= identity", "[regis
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
   feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
-  lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
 
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
   REQUIRE(lio.lidar_state.pose.translation().norm() < 1e-3);
@@ -139,12 +143,12 @@ TEST_CASE("scan_stats: the scan's points, the ICP's input and last iteration, an
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
   REQUIRE(lio.scan_stats.input_points == cloud.size()); // the first scan seeds the map: no ICP
   REQUIRE(lio.scan_stats.icp_iterations == 0);
 
   feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
-  lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
   REQUIRE(lio.scan_stats.input_points == cloud.size());
   REQUIRE(lio.scan_stats.imu_samples == 10);
   REQUIRE(lio.scan_stats.keypoints > 0);
@@ -155,7 +159,7 @@ TEST_CASE("scan_stats: the scan's points, the ICP's input and last iteration, an
   REQUIRE(static_cast<size_t>(lio.scan_stats.correspondences) <= lio.scan_stats.keypoints);
   REQUIRE(lio.scan_stats.icp_cost < 1e-4); // the same cloud again: it aligns
 
-  lio.register_scan(cloud, instant_timestamps(cloud.size(), FIRST_SCAN_END)); // not after the previous scan: skipped
+  register_cloud(lio, cloud, instant_timestamps(cloud.size(), FIRST_SCAN_END)); // not after the previous scan: skipped
   REQUIRE(lio.scan_stats.input_points == cloud.size());
   REQUIRE(lio.scan_stats.icp_iterations == 0);
 }
@@ -166,9 +170,9 @@ TEST_CASE("deskew = false: register_scan still produces a valid pose", "[registe
   LIO lio(cfg);
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
   feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
-  lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
 
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
   REQUIRE(lio.lidar_state.pose.translation().norm() < 1e-3);
@@ -179,7 +183,7 @@ TEST_CASE("Pure translation: recover +1m in x", "[register_scan]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   // Body accel a such that a * DT^2 / 2 = 1m in x  =>  a = 2 m/s^2. Add gravity for
   // the raw IMU value so compensated body accel comes out to (a, 0, 0).
@@ -193,7 +197,7 @@ TEST_CASE("Pure translation: recover +1m in x", "[register_scan]") {
   for (const auto& p : cloud) {
     cloud2.emplace_back(p - t);
   }
-  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
 
   const auto& pose = lio.lidar_state.pose;
   REQUIRE(approx_equal(pose.translation(), t, 1e-3));
@@ -204,7 +208,7 @@ TEST_CASE("Pure rotation: recover 5 deg yaw", "[register_scan]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   // omega * DT = yaw (5 deg) about z  =>  omega = yaw/DT rad/s.
   const double yaw = 5.0 * M_PI / 180.0;
@@ -218,7 +222,7 @@ TEST_CASE("Pure rotation: recover 5 deg yaw", "[register_scan]") {
   for (const auto& p : cloud) {
     cloud2.emplace_back(R_inv * p);
   }
-  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
 
   const auto& pose = lio.lidar_state.pose;
   REQUIRE(approx_equal(pose.so3(), R, 1e-3));
@@ -229,7 +233,7 @@ TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[r
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   // a gap longer than the one second tolerance, with the imu still streaming. yawing about the gravity axis keeps the
   // gravity compensation exact, so the body acceleration in x turns into a real translation as well as a rotation
@@ -247,7 +251,7 @@ TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[r
   for (const auto& p : cloud) {
     cloud2.emplace_back(into_ground_truth_frame * p);
   }
-  REQUIRE_NOTHROW(lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_START)));
+  REQUIRE_NOTHROW(register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_START)));
 
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_START, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, ground_truth, 1e-2));
@@ -257,7 +261,7 @@ TEST_CASE("Gap in the lidar stream: second scan has real per-point spread, not i
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube(2.0, 5.0);
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   constexpr double SECOND_SCAN_START = FIRST_SCAN_END + 1.5;
   constexpr double SECOND_SCAN_SPAN_END = SECOND_SCAN_START + 0.1;
@@ -282,7 +286,7 @@ TEST_CASE("Gap in the lidar stream: second scan has real per-point spread, not i
   REQUIRE(ground_truth.translation().norm() > 1.0);
   REQUIRE(ground_truth.so3().log().norm() > 0.1);
 
-  REQUIRE_NOTHROW(lio.register_scan(cloud2, ts2));
+  REQUIRE_NOTHROW(register_cloud(lio, cloud2, ts2));
 
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_SPAN_END, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, ground_truth, 1e-2));
@@ -292,7 +296,7 @@ TEST_CASE("Full SE(3): translation + rotation combined", "[register_scan]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   // Combined yaw + acceleration
   const double yaw = 3.0 * M_PI / 180.0;
@@ -309,7 +313,7 @@ TEST_CASE("Full SE(3): translation + rotation combined", "[register_scan]") {
   for (const auto& p : cloud) {
     cloud2.emplace_back(T_inv * p);
   }
-  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
 
   REQUIRE(approx_equal(lio.lidar_state.pose, T_expected, 1e-2));
 }
@@ -324,7 +328,7 @@ TEST_CASE("Noisy: pure translation +1m in x", "[register_scan][!mayfail]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   const Eigen::Vector3s t(1.0, 0.0, 0.0);
   const Eigen::Vector3s a_body = 2.0 * t / (DT * DT);
@@ -337,7 +341,7 @@ TEST_CASE("Noisy: pure translation +1m in x", "[register_scan][!mayfail]") {
   for (const auto& p : cloud) {
     cloud2.emplace_back(p - t);
   }
-  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
 
   const auto& pose = lio.lidar_state.pose;
   CAPTURE(pose.translation().transpose(), pose.so3().log().transpose());
@@ -349,7 +353,7 @@ TEST_CASE("Noisy: pure rotation 5 deg yaw", "[register_scan][!mayfail]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   const double yaw = 5.0 * M_PI / 180.0;
   const Eigen::Vector3s omega(0.0, 0.0, yaw / DT);
@@ -364,7 +368,7 @@ TEST_CASE("Noisy: pure rotation 5 deg yaw", "[register_scan][!mayfail]") {
   for (const auto& p : cloud) {
     cloud2.emplace_back(R_inv * p);
   }
-  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
 
   const auto& pose = lio.lidar_state.pose;
   CAPTURE(pose.translation().transpose(), pose.so3().log().transpose());
@@ -376,7 +380,7 @@ TEST_CASE("Noisy: full SE(3) translation + rotation", "[register_scan][!mayfail]
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   const double yaw = 3.0 * M_PI / 180.0;
   const Eigen::Vector3s t(0.5, 0.3, 0.0);
@@ -393,7 +397,7 @@ TEST_CASE("Noisy: full SE(3) translation + rotation", "[register_scan][!mayfail]
   for (const auto& p : cloud) {
     cloud2.emplace_back(T_inv * p);
   }
-  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
 
   CAPTURE(lio.lidar_state.pose.translation().transpose(), lio.lidar_state.pose.so3().log().transpose());
   CHECK(approx_equal(lio.lidar_state.pose, T_expected, 1e-2));
@@ -402,16 +406,57 @@ TEST_CASE("Noisy: full SE(3) translation + rotation", "[register_scan][!mayfail]
 TEST_CASE("register_scan: timestamp count mismatch throws instead of UB", "[register_scan]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
-  REQUIRE_THROWS_AS(lio.register_scan(cloud, Timestamps{}), InputError);
+  REQUIRE_THROWS_AS(register_cloud(lio, cloud, Timestamps{}), InputError);
   auto ts = linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END);
   ts.per_point.pop_back();
-  REQUIRE_THROWS_AS(lio.register_scan(cloud, ts), InputError);
+  REQUIRE_THROWS_AS(register_cloud(lio, cloud, ts), InputError);
+}
+
+TEST_CASE("register_scan: a scan without one extrinsic per cloud throws, its own stats set", "[register_scan]") {
+  LIO lio((LIO::Config{}));
+  const auto cloud = make_hollow_cube();
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+
+  const Vector3sVector part(cloud.begin(), cloud.begin() + 100);
+  const std::array<Timestamps, 1> timestamps{linspace_timestamps(part.size(), FIRST_SCAN_END, SECOND_SCAN_END)};
+  REQUIRE_THROWS_AS(lio.register_scan(std::vector<Vector3sVector>{part}, timestamps, {}), InputError);
+  REQUIRE(lio.scan_stats.input_points == part.size());
+}
+
+TEST_CASE("register_scan: each cloud's extrinsic brings it to the base frame", "[register_scan]") {
+  LIO::Config config;
+  config.deskew = GENERATE(false, true);
+  LIO lio(config);
+  const auto cube = make_hollow_cube();
+  const std::array<Sophus::SE3s, 2> lidar2base{Sophus::SE3s(Sophus::SO3s::rotZ(0.5), Eigen::Vector3s(0.6, 0.4, 0.3)),
+                                               Sophus::SE3s(Sophus::SO3s::rotX(-0.2), Eigen::Vector3s(0.6, -0.4, 0.3))};
+  std::vector<Vector3sVector> lidar_clouds;
+  for (const Sophus::SE3s& mount : lidar2base) {
+    Vector3sVector& lidar_cloud = lidar_clouds.emplace_back();
+    for (const auto& p : cube) {
+      lidar_cloud.emplace_back(mount.inverse() * p);
+    }
+  }
+
+  // the first scan seeds the map without deskewing, the second one is registered
+  for (const double scan_end : {FIRST_SCAN_END, SECOND_SCAN_END}) {
+    const std::array<Timestamps, 2> timestamps{instant_timestamps(cube.size(), scan_end),
+                                               instant_timestamps(cube.size(), scan_end)};
+    const std::vector<Vector3sVector> base_clouds = lio.register_scan(lidar_clouds, timestamps, lidar2base);
+    REQUIRE(base_clouds.size() == 2);
+    for (const Vector3sVector& base_cloud : base_clouds) {
+      REQUIRE(base_cloud.size() == cube.size());
+      for (std::size_t i = 0; i < cube.size(); ++i) {
+        REQUIRE(approx_equal(base_cloud[i], cube[i], LOOSE_TOL));
+      }
+    }
+  }
 }
 
 TEST_CASE("register_scan: zero correspondences throws RegistrationError", "[register_scan]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
   const auto pose_before = lio.lidar_state.pose;
   const auto time_before = lio.lidar_state.time;
 
@@ -421,7 +466,7 @@ TEST_CASE("register_scan: zero correspondences throws RegistrationError", "[regi
     p.x() += 20.0;
   }
 
-  REQUIRE_THROWS_AS(lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END)), RegistrationError);
+  REQUIRE_THROWS_AS(register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END)), RegistrationError);
   REQUIRE(approx_equal(lio.lidar_state.pose, pose_before, EXACT_TOL));
   REQUIRE(lio.lidar_state.time == time_before);
 }
@@ -436,7 +481,7 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   REQUIRE(lio.reset_count == 1);
   REQUIRE_FALSE(lio.config.initialization_phase);
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
   REQUIRE_FALSE(lio.map.empty());
 
   feed_static_imu(lio, FIRST_SCAN_END, SECOND_SCAN_END, 10);
@@ -444,7 +489,7 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   for (auto& p : cloud2) {
     p.x() += 20.0;
   }
-  REQUIRE_THROWS_AS(lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END)), RegistrationError);
+  REQUIRE_THROWS_AS(register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END)), RegistrationError);
 
   lio.restart();
   REQUIRE(lio.reset_count == 2);
@@ -454,7 +499,8 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
 
   constexpr double third_scan_end = SECOND_SCAN_END + DT;
-  lio.register_scan(cloud, instant_timestamps(cloud.size(), third_scan_end));
+  register_cloud(lio, cloud, instant_timestamps(cloud.size(), third_scan_end));
+  REQUIRE(lio.scan_stats.reset_count == 2);
   REQUIRE_FALSE(lio.map.empty());
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(third_scan_end, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));
@@ -463,29 +509,30 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
 TEST_CASE("A scan that does not end after the previous one, or a fragment of a scan, is dropped", "[register_scan]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
-  REQUIRE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END)).empty());
+  REQUIRE(register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END)).empty());
+  REQUIRE(register_cloud(lio, cloud, linspace_timestamps(cloud.size(), -0.05, FIRST_SCAN_END - 0.05)).empty());
 
   const Vector3sVector fragment(cloud.begin(), cloud.begin() + static_cast<std::ptrdiff_t>(cloud.size() / 20));
   REQUIRE(
-      lio.register_scan(fragment, linspace_timestamps(fragment.size(), FIRST_SCAN_END + 0.098, FIRST_SCAN_END + 0.1))
+      register_cloud(lio, fragment, linspace_timestamps(fragment.size(), FIRST_SCAN_END + 0.098, FIRST_SCAN_END + 0.1))
           .empty());
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END, 1e-9));
 
-  REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), FIRST_SCAN_END, SECOND_SCAN_END)).empty());
+  REQUIRE_FALSE(register_cloud(lio, cloud, linspace_timestamps(cloud.size(), FIRST_SCAN_END, SECOND_SCAN_END)).empty());
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
 }
 
 TEST_CASE("A full scan ending less than 10 ms after the previous one is dropped", "[register_scan]") {
   LIO lio((LIO::Config{}));
   const auto cloud = make_hollow_cube();
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
-  REQUIRE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.009, FIRST_SCAN_END + 0.009)).empty());
+  REQUIRE(register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.009, FIRST_SCAN_END + 0.009)).empty());
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END, 1e-9));
 
-  REQUIRE_FALSE(lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.011, FIRST_SCAN_END + 0.011)).empty());
+  REQUIRE_FALSE(register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.011, FIRST_SCAN_END + 0.011)).empty());
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(FIRST_SCAN_END + 0.011, 1e-9));
 }
 
@@ -503,7 +550,7 @@ TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_sca
   config.flat = true;
   LIO lio(config);
   const auto cloud = make_hollow_cube();
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
 
   const double yaw = 3.0 * M_PI / 180.0;
   const Eigen::Vector3s t(0.5, 0.3, 0.2);
@@ -516,7 +563,7 @@ TEST_CASE("flat: z, roll and pitch stay at their initial values", "[register_sca
   for (const auto& p : cloud) {
     cloud2.emplace_back(T_inv * p);
   }
-  lio.register_scan(cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud2, instant_timestamps(cloud2.size(), SECOND_SCAN_END));
 
   REQUIRE(
       approx_equal(lio.lidar_state.pose, Sophus::SE3s(Sophus::SO3s::rotZ(yaw), Eigen::Vector3s(0.5, 0.3, 0.0)), 1e-2));
@@ -530,9 +577,9 @@ TEST_CASE("flat: the tilt from initialization_phase compensates gravity and stay
   const auto cloud = make_hollow_cube();
   const Eigen::Vector3s tilted_gravity = Sophus::SO3s::rotX(0.1) * Eigen::Vector3s(0.0, 0.0, GRAVITY_MAG);
 
-  lio.register_scan(cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
   feed_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10, tilted_gravity, Eigen::Vector3s::Zero());
-  lio.register_scan(cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
+  register_cloud(lio, cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
   feed_imu(lio, SECOND_SCAN_END + 0.05, SECOND_SCAN_END + DT - 0.05, 10, tilted_gravity, Eigen::Vector3s::Zero());
 
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));

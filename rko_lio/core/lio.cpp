@@ -64,6 +64,14 @@ inline void transform_points(const Sophus::SE3s& T, Vector3sVector& points) {
   std::transform(points.begin(), points.end(), points.begin(), [&](const auto& point) { return T * point; });
 }
 
+void to_base_frame(std::vector<Vector3sVector>& scan, const std::span<const Sophus::SE3s> lidar2base) {
+  for (std::size_t cloud = 0; cloud < scan.size(); ++cloud) {
+    if (lidar2base[cloud].log().norm() >= NEGLIGIBLE_EXTRINSIC) {
+      transform_points(lidar2base[cloud], scan[cloud]);
+    }
+  }
+}
+
 struct LinearSystem {
   Eigen::Matrix6s H;
   Eigen::Vector6s b;
@@ -231,9 +239,12 @@ void LIO::initialize(const Nsec lidar_time) {
                streamed(imu_bias.gyroscope.transpose()));
 }
 
-std::vector<Vector3sVector> LIO::bootstrap_first_scan(std::vector<Vector3sVector> scan, const Nsec current_lidar_time) {
+std::vector<Vector3sVector> LIO::bootstrap_first_scan(std::vector<Vector3sVector> scan,
+                                                      const std::span<const Sophus::SE3s> lidar2base,
+                                                      const Nsec current_lidar_time) {
   lidar_state.time = current_lidar_time;
   imu_state = lidar_state;
+  to_base_frame(scan, lidar2base);
   auto preproc = preprocess_scan(std::move(scan), config);
   if (!config.initialization_phase) {
     map.update(config.double_downsample ? preproc.map_points : preproc.keypoints, lidar_state.pose);
@@ -368,20 +379,17 @@ void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuC
 
 // ============================ lidar ===============================
 
-Vector3sVector LIO::register_scan(Vector3sVector scan, const Timestamps& timestamps) {
-  std::vector<Vector3sVector> clouds;
-  clouds.push_back(std::move(scan));
-  std::vector<Vector3sVector> deskewed = register_scan(std::move(clouds), std::span(&timestamps, 1));
-  return deskewed.empty() ? Vector3sVector{} : std::move(deskewed.front());
-}
-
 std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
-                                               const std::span<const Timestamps> timestamps) {
-  if (scan.empty() || scan.size() != timestamps.size()) {
+                                               const std::span<const Timestamps> timestamps,
+                                               const std::span<const Sophus::SE3s> lidar2base) {
+  const std::size_t point_count = std::transform_reduce(scan.cbegin(), scan.cend(), std::size_t{0}, std::plus<>(),
+                                                        [](const Vector3sVector& cloud) { return cloud.size(); });
+  scan_stats = {.input_points = point_count, .imu_samples = interval_stats.imu_count, .reset_count = reset_count};
+  if (scan.empty() || scan.size() != timestamps.size() || scan.size() != lidar2base.size()) {
     throw InputError("LiDAR scan of " + std::to_string(scan.size()) + " clouds has " +
-                     std::to_string(timestamps.size()) + " timestamp entries.");
+                     std::to_string(timestamps.size()) + " timestamp entries and " + std::to_string(lidar2base.size()) +
+                     " extrinsics; it needs one of each per cloud.");
   }
-  std::size_t point_count = 0;
   for (std::size_t cloud = 0; cloud < scan.size(); ++cloud) {
     if (scan[cloud].size() != timestamps[cloud].per_point.size()) {
       throw InputError("LiDAR timestamps size (" + std::to_string(timestamps[cloud].per_point.size()) +
@@ -390,13 +398,12 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
     if (timestamps[cloud].min != timestamps.front().min || timestamps[cloud].max != timestamps.front().max) {
       throw InputError("The clouds of one LiDAR scan disagree on its first or last timestamp.");
     }
-    point_count += scan[cloud].size();
   }
-  scan_stats = {.input_points = point_count, .imu_samples = interval_stats.imu_count};
   const Nsec scan_start = timestamps.front().min;
   const Nsec current_lidar_time = timestamps.front().max;
-  if (lidar_state.time >= EPSILON_TIME && current_lidar_time <= lidar_state.time) {
-    spdlog::warn("Dropping a LiDAR scan that does not end after the previous one.");
+  if (lidar_state.time >= EPSILON_TIME && current_lidar_time - lidar_state.time < MIN_SCAN_TO_SCAN_DELTA) {
+    spdlog::warn("Dropping a LiDAR scan that ends {} ms after the previous one.",
+                 std::chrono::duration<double, std::milli>(current_lidar_time - lidar_state.time).count());
     return {};
   }
   if (fragment_check_.is_fragment(to_seconds<Scalar>(current_lidar_time - scan_start),
@@ -406,12 +413,7 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
   }
 
   if (lidar_state.time < EPSILON_TIME) {
-    return bootstrap_first_scan(std::move(scan), current_lidar_time);
-  }
-  if (current_lidar_time - lidar_state.time < MIN_SCAN_TO_SCAN_DELTA) {
-    spdlog::warn("Dropping a LiDAR scan that ends {} ms after the previous one.",
-                 std::chrono::duration<double, std::milli>(current_lidar_time - lidar_state.time).count());
-    return {};
+    return bootstrap_first_scan(std::move(scan), lidar2base, current_lidar_time);
   }
 
   if (std::chrono::abs(current_lidar_time - lidar_state.time) > MAX_SCAN_TO_SCAN_DELTA) {
@@ -434,8 +436,10 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
         .angular_velocity = motion.angular_velocity,
     };
     for (std::size_t cloud = 0; cloud < scan.size(); ++cloud) {
-      deskew_scan(scan[cloud], timestamps[cloud], scan_motion);
+      deskew_scan(scan[cloud], timestamps[cloud], scan_motion, lidar2base[cloud]);
     }
+  } else {
+    to_base_frame(scan, lidar2base);
   }
   auto preproc_result = [&] {
     UTL_PROFILER_SCOPE("rko_lio: preprocess");
@@ -488,17 +492,6 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
   }
 
   return std::move(preproc_result.filtered_scan);
-}
-
-std::vector<Vector3sVector> LIO::register_scan(const Sophus::SE3s& extrinsic_lidar2base,
-                                               std::vector<Vector3sVector> scan,
-                                               const std::span<const Timestamps> timestamps) {
-  if (extrinsic_lidar2base.log().norm() >= NEGLIGIBLE_EXTRINSIC) {
-    for (Vector3sVector& cloud : scan) {
-      transform_points(extrinsic_lidar2base, cloud);
-    }
-  }
-  return register_scan(std::move(scan), timestamps);
 }
 
 void LIO::restart() {

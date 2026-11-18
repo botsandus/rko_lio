@@ -76,7 +76,7 @@ core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
 // arrival to the start of its processing, and the processing.
 constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,transport_ns,queue_ns,process_ns,"
                                                     "status,input_points,keypoints,imu_samples,icp_iterations,"
-                                                    "correspondences,icp_cost";
+                                                    "correspondences,icp_cost,reset_count";
 
 class BaseNode {
 public:

@@ -77,10 +77,16 @@ Timestamps distinct_timestamps(const int count, const Nsec duration) {
 
 // Both forms are about ten float operations deep on values bounded by the point's range plus a translation under a
 // metre, so each is within ~5 eps of the exact value relative to max(|p|, 1 m); 32 eps leaves a margin of three.
-Scalar max_relative_difference(const Vector3sVector& scan, const Timestamps& timestamps, const MotionPrior& motion) {
-  const Vector3sVector expected = deskew_per_point(scan, timestamps, motion);
+Scalar max_relative_difference(const Vector3sVector& scan,
+                               const Timestamps& timestamps,
+                               const MotionPrior& motion,
+                               const Sophus::SE3s& lidar2base) {
+  Vector3sVector base_scan(scan.size());
+  std::transform(scan.cbegin(), scan.cend(), base_scan.begin(),
+                 [&](const Eigen::Vector3s& point) { return Eigen::Vector3s(lidar2base * point); });
+  const Vector3sVector expected = deskew_per_point(base_scan, timestamps, motion);
   Vector3sVector deskewed = scan;
-  deskew_scan(deskewed, timestamps, motion);
+  deskew_scan(deskewed, timestamps, motion, lidar2base);
   Scalar max_difference = 0;
   for (std::size_t i = 0; i < scan.size(); ++i) {
     max_difference = std::max(max_difference, (deskewed[i] - expected[i]).norm() / std::max(scan[i].norm(), Scalar{1}));
@@ -90,6 +96,9 @@ Scalar max_relative_difference(const Vector3sVector& scan, const Timestamps& tim
 
 constexpr Scalar TOLERANCE = 32 * std::numeric_limits<Scalar>::epsilon();
 
+// a lidar mounted off the base origin and yawed by about 130 degrees
+const Sophus::SE3s MOUNT(Sophus::SO3s::exp(Eigen::Vector3s(0.01, 0.02, 2.3)), Eigen::Vector3s(0.66, -0.46, 0.3));
+
 MotionPrior driving_motion(const Timestamps& timestamps) {
   return {.start_time = timestamps.min,
           .linear_velocity = Eigen::Vector3s(1.5, 0.2, 0.0),
@@ -98,28 +107,35 @@ MotionPrior driving_motion(const Timestamps& timestamps) {
 }
 } // namespace
 
-TEST_CASE("deskew_scan: repeated stamps match the per-point form", "[deskew]") {
+TEST_CASE("deskew_scan: repeated stamps match the extrinsic then the per-point form", "[deskew]") {
   const Timestamps timestamps = organised_timestamps(128, 450, Nsec(100'000'000));
-  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps)) <
-          TOLERANCE);
+  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps),
+                                  MOUNT) < TOLERANCE);
 }
 
-TEST_CASE("deskew_scan: all-distinct stamps match the per-point form", "[deskew]") {
+TEST_CASE("deskew_scan: all-distinct stamps, past the cache's miss limit, match the extrinsic then the per-point form",
+          "[deskew]") {
   const Timestamps timestamps = distinct_timestamps(20'000, Nsec(100'000'000));
-  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps)) <
-          TOLERANCE);
+  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps),
+                                  MOUNT) < TOLERANCE);
 }
 
-TEST_CASE("deskew_scan: zero angular velocity matches the per-point form", "[deskew]") {
+TEST_CASE("deskew_scan: an identity extrinsic matches the per-point form", "[deskew]") {
+  const Timestamps timestamps = organised_timestamps(128, 450, Nsec(100'000'000));
+  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, driving_motion(timestamps),
+                                  Sophus::SE3s{}) < TOLERANCE);
+}
+
+TEST_CASE("deskew_scan: zero angular velocity matches the extrinsic then the per-point form", "[deskew]") {
   const Timestamps timestamps = organised_timestamps(32, 1024, Nsec(100'000'000));
   MotionPrior motion = driving_motion(timestamps);
   motion.angular_velocity.setZero();
-  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion) < TOLERANCE);
+  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion, MOUNT) < TOLERANCE);
 }
 
-TEST_CASE("deskew_scan: a rotation of 3 rad over the scan matches the per-point form", "[deskew]") {
+TEST_CASE("deskew_scan: a rotation of 3 rad over the scan matches the extrinsic then the per-point form", "[deskew]") {
   const Timestamps timestamps = organised_timestamps(64, 900, Nsec(300'000'000));
   MotionPrior motion = driving_motion(timestamps);
   motion.angular_velocity = Eigen::Vector3s(1.0, -2.0, 9.7);
-  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion) < TOLERANCE);
+  REQUIRE(max_relative_difference(random_points(timestamps.per_point.size()), timestamps, motion, MOUNT) < TOLERANCE);
 }

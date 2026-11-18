@@ -20,6 +20,7 @@ using rko_lio::tests::approx_equal;
 using rko_lio::tests::EXACT_TOL;
 using rko_lio::tests::LOOSE_TOL;
 using rko_lio::tests::make_hollow_cube;
+using rko_lio::tests::register_cloud;
 using rko_lio::tests::TOL;
 
 namespace {
@@ -253,7 +254,7 @@ TEST_CASE("register_scan resets imu_state to optimized pose", "[imu_integration]
     ts1_per_point.emplace_back(ns_from_seconds(FIRST_SCAN_END * frac));
   }
   const Timestamps ts1{.min = ns_from_seconds(0.0), .max = ns_from_seconds(FIRST_SCAN_END), .per_point = ts1_per_point};
-  lio.register_scan(cloud, ts1);
+  register_cloud(lio, cloud, ts1);
 
   // Static IMU samples between the two scans. Use enough samples that interval_stats
   // is well-formed for the inter-scan filter.
@@ -271,7 +272,7 @@ TEST_CASE("register_scan resets imu_state to optimized pose", "[imu_integration]
   const Timestamps ts2{.min = ns_from_seconds(SECOND_SCAN_END),
                        .max = ns_from_seconds(SECOND_SCAN_END),
                        .per_point = TimestampVector(cloud.size(), ns_from_seconds(SECOND_SCAN_END))};
-  lio.register_scan(cloud, ts2);
+  register_cloud(lio, cloud, ts2);
 
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
   REQUIRE(approx_equal(lio.imu_state.pose, lio.lidar_state.pose, EXACT_TOL));

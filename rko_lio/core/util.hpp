@@ -127,12 +127,13 @@ private:
 
 /** What the odometry had for one scan: its points, the ICP's input and the ICP's last iteration. */
 struct ScanStats {
-  std::size_t input_points = 0; // in the message, before range clipping
+  std::size_t input_points = 0; // finite points in the scan
   std::size_t keypoints = 0;    // fed to the ICP
   int imu_samples = 0;          // since the previous scan
   std::size_t icp_iterations = 0;
   int correspondences = 0; // of the last ICP iteration
   Scalar icp_cost = 0;     // half the mean squared residual of the last ICP iteration
+  std::size_t reset_count = 0;
 };
 
 /** Accumulated IMU statistics over the interval between consecutive LiDAR scans. */
