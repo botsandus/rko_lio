@@ -506,7 +506,6 @@ TEST_CASE("reset after RegistrationError: next scan bootstraps like a first scan
 
   constexpr double third_scan_end = SECOND_SCAN_END + DT;
   register_cloud(lio, cloud, instant_timestamps(cloud.size(), third_scan_end));
-  REQUIRE(lio.scan_stats.reset_count == 2);
   REQUIRE_FALSE(lio.map.empty());
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(third_scan_end, 1e-9));
   REQUIRE(approx_equal(lio.lidar_state.pose, Sophus::SE3s{}, EXACT_TOL));

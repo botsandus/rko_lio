@@ -368,10 +368,11 @@ void BaseNode::reset_odometry() {
     lock.lock();
   }
   lio->restart();
-  RCLCPP_WARN_STREAM(node->get_logger(), "Odometry reset count: " << lio->reset_count);
+  reset_count = lio->reset_count;
+  RCLCPP_WARN_STREAM(node->get_logger(), "Odometry reset count: " << reset_count);
   if (publish_odom) {
     std_msgs::msg::UInt32 reset_count_msg;
-    reset_count_msg.data = static_cast<std::uint32_t>(lio->reset_count);
+    reset_count_msg.data = static_cast<std::uint32_t>(reset_count);
     reset_count_publisher->publish(reset_count_msg);
   }
   if (forced_init_off) {

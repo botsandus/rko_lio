@@ -125,6 +125,7 @@ public:
   std::atomic<bool> atomic_node_running = true;
   // ~/reset sets it; the next registration resets the odometry first, on the registration thread
   std::atomic<bool> atomic_reset_requested = false;
+  std::atomic<std::size_t> reset_count = 0; // lio->reset_count, for rows recorded on any thread
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service;
   std::jthread map_publish_thread;
 

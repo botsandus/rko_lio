@@ -125,8 +125,7 @@ private:
   Scalar lowpass_point_count_ = 0;
 };
 
-/** One scan's statistics: its points and IMU samples, the ICP's input and last iteration, and the odometry's resets
- *  so far. */
+/** One scan's statistics: its points and IMU samples, the ICP's input and last iteration. */
 struct ScanStats {
   std::size_t input_points = 0; // finite points in the scan
   std::size_t keypoints = 0;    // fed to the ICP
@@ -134,7 +133,6 @@ struct ScanStats {
   std::size_t icp_iterations = 0;
   int correspondences = 0; // of the last ICP iteration
   Scalar icp_cost = 0;     // half the mean squared residual of the last ICP iteration
-  std::size_t reset_count = 0;
 };
 
 /** Accumulated IMU statistics over the interval between consecutive LiDAR scans. */

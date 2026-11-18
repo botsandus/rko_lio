@@ -349,7 +349,7 @@ void ThreadedNode::record_scan(const LidarScan& scan,
       static_cast<double>(stats.icp_iterations),
       static_cast<double>(stats.correspondences),
       static_cast<double>(stats.icp_cost),
-      static_cast<double>(stats.reset_count),
+      static_cast<double>(reset_count),
   };
   fields.size = static_cast<std::uint32_t>(msg.data.size());
   fields.stride = fields.size;

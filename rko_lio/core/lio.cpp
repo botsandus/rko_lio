@@ -390,7 +390,7 @@ std::vector<Vector3sVector> LIO::register_scan(std::vector<Vector3sVector> scan,
                                                const std::span<const Sophus::SE3s> lidar2base) {
   const std::size_t point_count = std::transform_reduce(scan.cbegin(), scan.cend(), std::size_t{0}, std::plus<>(),
                                                         [](const Vector3sVector& cloud) { return cloud.size(); });
-  scan_stats = {.input_points = point_count, .imu_samples = interval_stats.imu_count, .reset_count = reset_count};
+  scan_stats = {.input_points = point_count, .imu_samples = interval_stats.imu_count};
   if (scan.empty() || scan.size() != timestamps.size() || scan.size() != lidar2base.size()) {
     throw InputError("LiDAR scan of " + std::to_string(scan.size()) + " clouds has " +
                      std::to_string(timestamps.size()) + " timestamp entries and " + std::to_string(lidar2base.size()) +
