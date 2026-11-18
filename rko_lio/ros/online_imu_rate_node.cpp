@@ -101,17 +101,17 @@ public:
     }
 
     try {
-      LidarPayload scan = process_lidar_msg(lidar_msg, *extrinsic_lidar2base);
+      LidarPayload payload = process_lidar_msg(lidar_msg, *extrinsic_lidar2base);
       const std::vector<core::Vector3sVector> deskewed_scan =
-          register_payload_locked(std::move(scan.points), scan.timestamps, scan.lidar2base);
+          register_payload_locked(std::move(payload.points), payload.timestamps, payload.lidar2base);
       if (deskewed_scan.empty()) {
-        // first scan is skipped and an empty scan is returned. nothing to publish.
+        // the first payload is skipped and returns nothing to publish
         return;
       }
       publish_tf(lio->lidar_state);
       publish_lidar_outputs(deskewed_scan);
     } catch (const core::InputError& ex) {
-      RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
+      RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping payload: " << ex.what());
     } catch (const core::RegistrationError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Registration failed (" << ex.what() << ").");
       if (reset_on_registration_error) {

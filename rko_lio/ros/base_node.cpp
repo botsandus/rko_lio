@@ -57,7 +57,7 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   lidar_topics = node->declare_parameter<std::vector<std::string>>("lidar_topics", lidar_topics);
   if (lidar_topic.empty() == lidar_topics.empty()) {
     throw std::invalid_argument(
-        "Set exactly one of lidar_topic and lidar_topics (several lidars merged into one scan).");
+        "Set exactly one of lidar_topic and lidar_topics (several lidars merged into one payload).");
   }
   base_frame = node->declare_parameter<std::string>("base_frame"); // required
   odom_frame = node->declare_parameter<std::string>("odom_frame", odom_frame);
@@ -162,7 +162,7 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
                         const std::shared_ptr<std_srvs::srv::Trigger::Response>& response) {
         atomic_reset_requested = true;
         response->success = true;
-        response->message = "The odometry resets before its next scan.";
+        response->message = "The odometry resets before its next payload.";
       });
 
   if (publish_local_map) { // last: a throw above must not leave this thread running, and it reads lio
@@ -174,7 +174,7 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
 void BaseNode::require_single_lidar() const {
   if (!lidar_topics.empty()) {
     throw std::invalid_argument(
-        "lidar_topics (several lidars merged into one scan) is supported by the online node only.");
+        "lidar_topics (several lidars merged into one payload) is supported by the online node only.");
   }
 }
 
@@ -198,25 +198,25 @@ LidarPayload BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Co
   const core::Nsec arrival_node_clock = utils::to_ns(node->now());
   UTL_PROFILER_SCOPE("rko_lio: convert message");
   const core::Nsec header_stamp = utils::to_ns(lidar_msg->header.stamp);
-  LidarPayload scan{.arrival = arrival};
+  LidarPayload payload{.arrival = arrival};
   if (lio->config.deskew) {
     utils::RawScan raw = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
-    scan.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
-    scan.points.push_back(std::move(raw.points));
+    payload.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
+    payload.points.push_back(std::move(raw.points));
   } else {
     RCLCPP_WARN_STREAM_ONCE(node->get_logger(),
                             "Deskewing is disabled. Populating timestamps with static header time.");
-    scan.points.push_back(utils::point_cloud2_to_eigen(lidar_msg));
-    scan.timestamps.push_back({.min = header_stamp, .max = header_stamp});
-    scan.timestamps.front().per_point.assign(scan.points.front().size(), header_stamp);
+    payload.points.push_back(utils::point_cloud2_to_eigen(lidar_msg));
+    payload.timestamps.push_back({.min = header_stamp, .max = header_stamp});
+    payload.timestamps.front().per_point.assign(payload.points.front().size(), header_stamp);
   }
-  scan.lidar2base.push_back(lidar2base);
-  scan.upstream = arrival_node_clock - scan.end();
-  scan.ready = std::chrono::steady_clock::now();
-  return scan;
+  payload.lidar2base.push_back(lidar2base);
+  payload.upstream = arrival_node_clock - payload.end();
+  payload.ready = std::chrono::steady_clock::now();
+  return payload;
 }
 
-std::vector<core::Vector3sVector> BaseNode::register_payload_locked(std::vector<core::Vector3sVector> scan,
+std::vector<core::Vector3sVector> BaseNode::register_payload_locked(std::vector<core::Vector3sVector> clouds,
                                                                     const std::span<const core::Timestamps> timestamps,
                                                                     const std::span<const Sophus::SE3s> lidar2base) {
   if (atomic_reset_requested.exchange(false)) {
@@ -227,7 +227,7 @@ std::vector<core::Vector3sVector> BaseNode::register_payload_locked(std::vector<
   if (publish_local_map) {
     lock.lock(); // map publish thread may access map simultaneously
   }
-  return lio->register_payload(std::move(scan), timestamps, lidar2base);
+  return lio->register_payload(std::move(clouds), timestamps, lidar2base);
 }
 
 void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_scan) const {

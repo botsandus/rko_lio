@@ -100,7 +100,7 @@ public:
   /** How many times `reset()` has been called. */
   std::size_t reset_count = 0;
   /** What the last payload given to `register_payload` had; its ICP fields stay zero if no ICP ran. */
-  ScanStats scan_stats;
+  PayloadStats payload_stats;
 
   explicit LIO(const Config& config_);
 
@@ -118,20 +118,20 @@ public:
   /**
    * Register a payload: one scan per lidar (one, or several phase-locked ones), as one pose at the payload's last
    * point, applying deskewing based on the initial motion guess and clipping points beyond valid range.
-   * @param scan The clouds, each in its lidar's frame.
+   * @param clouds One scan per lidar, each in its lidar's frame.
    * @param timestamps One entry per cloud: its per-point timestamps and its own min/max.
    * @param lidar2base One entry per cloud: the extrinsic from its lidar to the base frame.
    * @return The deskewed and clipped clouds, in the base frame; empty if the payload was skipped.
    */
-  std::vector<Vector3sVector> register_payload(std::vector<Vector3sVector> scan,
+  std::vector<Vector3sVector> register_payload(std::vector<Vector3sVector> clouds,
                                                const std::span<const Timestamps> timestamps,
                                                const std::span<const Sophus::SE3s> lidar2base);
 
-  /** Restart, treating the next scan as if it were the first. Keeps the IMU bias estimates; forces
+  /** Restart, treating the next payload as if it were the first. Keeps the IMU bias estimates; forces
    *  `config.initialization_phase` off. */
   void restart();
 
-  /** Base-frame state propagated from IMU measurements. Runs ahead of `lidar_state` between scans; reset to the
+  /** Base-frame state propagated from IMU measurements. Runs ahead of `lidar_state` between payloads; reset to the
    *  optimized lidar pose after each successful registration. Used for gravity compensation and for publishing
    *  IMU-rate odometry from the ROS wrapper.
    */
@@ -144,12 +144,13 @@ private:
    */
   void initialize(const Nsec lidar_time);
 
-  /** First-scan path: stamps state, brings the clouds to the base frame without deskewing, optionally seeds the map. */
-  std::vector<Vector3sVector> bootstrap_first_scan(std::vector<Vector3sVector> scan,
-                                                   const std::span<const Sophus::SE3s> lidar2base,
-                                                   const Nsec current_lidar_time);
+  /** First-payload path: stamps state, brings the clouds to the base frame without deskewing, optionally seeds the map.
+   */
+  std::vector<Vector3sVector> bootstrap_first_payload(std::vector<Vector3sVector> clouds,
+                                                      const std::span<const Sophus::SE3s> lidar2base,
+                                                      const Nsec current_lidar_time);
 
-  /** Motion prior for the coming scan, from the IMU interval average */
+  /** Motion prior for the coming payload, from the IMU interval average */
   MotionPrior motion_prior_from_imu(const Nsec current_lidar_time);
 
   /** True if odometry initialization has been completed. */

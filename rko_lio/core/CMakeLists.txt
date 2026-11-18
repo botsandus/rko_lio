@@ -34,14 +34,14 @@ compat_target_sources(
           voxel_hash_map.cpp
           voxel_down_sample.cpp
           process_timestamps.cpp
-          preprocess_scan.cpp
+          preprocess_payload.cpp
   PUBLIC
   FILE_SET
   HEADERS
   FILES ../../rko_lio/core/deskew.hpp
         ../../rko_lio/core/error.hpp
         ../../rko_lio/core/lio.hpp
-        ../../rko_lio/core/preprocess_scan.hpp
+        ../../rko_lio/core/preprocess_payload.hpp
         ../../rko_lio/core/process_timestamps.hpp
         ../../rko_lio/core/voxel_hash_map.hpp
         ../../rko_lio/core/util.hpp

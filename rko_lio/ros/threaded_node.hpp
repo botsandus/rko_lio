@@ -44,9 +44,9 @@
 
 namespace rko_lio::ros {
 
-// What became of a scan: registered, skipped (out of order, a fragment, or ending too soon after the previous one),
-// dropped, or (merging) one merge payload whose lidars' scans did not end together.
-enum class ScanStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error, unsynced };
+// What became of a payload: registered, skipped (a fragment, or ending too soon after the previous one), dropped, or
+// (merging) one whose lidars' scans did not end together.
+enum class PayloadStatus : std::uint8_t { ok, skipped, buffer_full, input_error, registration_error, unsynced };
 
 class ThreadedNode : public BaseNode {
 public:
@@ -58,7 +58,7 @@ public:
   std::queue<LidarPayload> lidar_buffer;
   size_t max_lidar_buffer_size = 10;
 
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr payload_metrics_publisher;
 
   // merge state: touched only by the lidar callbacks, which never run at once (one mutually exclusive callback group)
   struct MultiLidarInput {
@@ -88,14 +88,14 @@ public:
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();
-  void add_to_lidar_buffer(LidarPayload scan);
+  void add_to_lidar_buffer(LidarPayload payload);
   void registration_loop();
 
-  // stats are empty for a scan dropped from the buffer
-  void publish_scan_metrics(const LidarPayload& scan,
-                            const std::chrono::steady_clock::time_point registration_start,
-                            const ScanStatus status,
-                            const core::ScanStats& stats);
+  // stats are empty for a payload dropped from the buffer
+  void publish_payload_metrics(const LidarPayload& payload,
+                               const std::chrono::steady_clock::time_point registration_start,
+                               const PayloadStatus status,
+                               const core::PayloadStats& stats);
 
   ~ThreadedNode();
   ThreadedNode(const ThreadedNode&) = delete;

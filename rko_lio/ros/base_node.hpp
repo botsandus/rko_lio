@@ -76,9 +76,10 @@ struct LidarPayload {
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
 
-// scan_metrics layout label, times in ns: upstream = LidarPayload::upstream; convert = arrival to ready; wait = ready
-// to the registration start (an IMU sample past the scan end, or the previous scan); registration = start to the pose
-constexpr std::string_view SCAN_STATISTICS_FIELDS = "scan_end_ns,scan_duration_ns,upstream_ns,convert_ns,wait_ns,"
+// payload_metrics layout label, times in ns: upstream = LidarPayload::upstream; convert = arrival to ready; wait =
+// ready to the registration start (an IMU sample past the payload end, or the previous payload); registration = start
+// to the pose
+constexpr std::string_view PAYLOAD_METRICS_FIELDS = "end_ns,duration_ns,upstream_ns,convert_ns,wait_ns,"
                                                     "registration_ns,"
                                                     "status,input_points,keypoints,imu_samples,icp_iterations,"
                                                     "correspondences,icp_cost,reset_count";
@@ -106,7 +107,7 @@ public:
 
   std::string imu_topic;
   std::string lidar_topic;
-  std::vector<std::string> lidar_topics; // set instead of lidar_topic: these lidars are merged into one scan
+  std::vector<std::string> lidar_topics; // set instead of lidar_topic: these lidars are merged into one payload
   std::string base_frame;
   std::string odom_frame = "odom";
   std::string odom_topic = "rko_lio/odom";
@@ -141,7 +142,7 @@ public:
   LidarPayload process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
                                  const Sophus::SE3s& lidar2base) const;
 
-  std::vector<core::Vector3sVector> register_payload_locked(std::vector<core::Vector3sVector> scan,
+  std::vector<core::Vector3sVector> register_payload_locked(std::vector<core::Vector3sVector> clouds,
                                                             const std::span<const core::Timestamps> timestamps,
                                                             const std::span<const Sophus::SE3s> lidar2base);
 
