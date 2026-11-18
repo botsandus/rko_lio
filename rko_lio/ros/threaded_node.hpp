@@ -91,7 +91,7 @@ public:
   void add_to_lidar_buffer(LidarScan scan);
   void registration_loop();
 
-  // A scan's row: its statistics (empty for one dropped from the buffer) and what became of it.
+  // stats are empty for a scan dropped from the buffer
   void publish_scan_metrics(const LidarScan& scan,
                             const std::chrono::steady_clock::time_point process_start,
                             const ScanStatus status,
