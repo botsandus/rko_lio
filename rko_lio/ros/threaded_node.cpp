@@ -46,6 +46,8 @@ constexpr rko_lio::core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
 constexpr rko_lio::core::Nsec MAX_PHASE_SPREAD = 5ms;
 constexpr rko_lio::core::Nsec LIDAR_PERIOD = 100ms;
 constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
+// a scan more than this many payloads from the anchor is a time step (PTP), not a phase-locked lidar
+constexpr int MAX_PAYLOAD_JUMP = 10;
 
 std::int64_t ns_between(const std::chrono::steady_clock::time_point from,
                         const std::chrono::steady_clock::time_point to) {
@@ -105,6 +107,14 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
   }
   try {
     LidarPayload scan = process_lidar_msg(lidar_msg, *in.lidar2base);
+    if (payload_anchor && std::chrono::abs(scan.end() - payload_anchor->end) > MAX_PAYLOAD_JUMP * LIDAR_PERIOD) {
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         "A scan from " << in.topic << " ends " << core::to_seconds(scan.end() - payload_anchor->end)
+                                        << " s from the merge anchor: re-anchoring the merge on it");
+      open_payloads.clear();
+      payload_anchor.reset();
+      last_merged_payload = std::numeric_limits<std::int64_t>::min();
+    }
     if (!payload_anchor) {
       payload_anchor = PayloadAnchor{.end = scan.end(), .payload = 0};
     }
