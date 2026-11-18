@@ -32,7 +32,7 @@ class OnlineNode : public ThreadedNode {
 public:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
   rclcpp::SubscriptionBase::SharedPtr lidar_sub;
-  std::vector<rclcpp::SubscriptionBase::SharedPtr> merge_subs;
+  std::vector<rclcpp::SubscriptionBase::SharedPtr> multi_lidar_subs;
   rko_lio::core::Timer timer;
 
   OnlineNode(const OnlineNode&) = delete;
@@ -55,7 +55,7 @@ public:
           [this](const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) { lidar_callback(lidar_msg); });
     }
     for (std::size_t input = 0; input < lidar_topics.size(); ++input) {
-      merge_subs.push_back(utils::create_lidar_subscription(
+      multi_lidar_subs.push_back(utils::create_lidar_subscription(
           node, lidar_topics[input], qos_lidar,
           [this, input](const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) {
             multi_lidar_callback(lidar_msg, input);

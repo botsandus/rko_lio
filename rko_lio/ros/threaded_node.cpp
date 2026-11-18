@@ -63,7 +63,7 @@ ThreadedNode::ThreadedNode(const std::string& node_name, const rclcpp::NodeOptio
     scan_metrics_publisher = node->create_publisher<std_msgs::msg::Float64MultiArray>("rko_lio/scan_metrics", 100);
   }
   for (const std::string& topic : lidar_topics) {
-    merge_inputs.push_back({.topic = topic});
+    multi_lidar_inputs.push_back({.topic = topic});
   }
   registration_thread = std::jthread([this] { registration_loop(); });
 }
@@ -98,7 +98,7 @@ void ThreadedNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstShar
 
 void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
                                         const std::size_t input) {
-  MergeInput& in = merge_inputs[input];
+  MultiLidarInput& in = multi_lidar_inputs[input];
   if (!in.lidar2base) {
     in.lidar2base = utils::get_transform(tf_buffer, lidar_msg->header.frame_id, base_frame, 0s);
     if (!in.lidar2base) {
@@ -126,7 +126,7 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
                            {.input_points = scan.point_count()});
       if (payload > last_merged_payload) {
         std::vector<PayloadSlot>& slots = open_payloads[payload];
-        slots.resize(merge_inputs.size());
+        slots.resize(multi_lidar_inputs.size());
         slots[input].dropped = true;
         merge_ready_payloads();
       }
@@ -140,7 +140,7 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
       return;
     }
     std::vector<PayloadSlot>& slots = open_payloads[payload];
-    slots.resize(merge_inputs.size());
+    slots.resize(multi_lidar_inputs.size());
     if (slots[input].scan) {
       RCLCPP_WARN_STREAM(node->get_logger(),
                          "Dropping a LiDAR scan from " << in.topic << ": a second one in one payload");
@@ -183,7 +183,7 @@ void ThreadedNode::merge_ready_payloads() {
       PayloadSlot& slot = slots[input];
       if (!slot.scan) {
         if (!slot.dropped) {
-          missing += " " + merge_inputs[input].topic;
+          missing += " " + multi_lidar_inputs[input].topic;
         }
         continue;
       }

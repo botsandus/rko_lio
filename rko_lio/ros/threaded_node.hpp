@@ -61,7 +61,7 @@ public:
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr scan_metrics_publisher;
 
   // merge state: touched only by the lidar callbacks, which never run at once (one mutually exclusive callback group)
-  struct MergeInput {
+  struct MultiLidarInput {
     std::string topic;
     std::optional<Sophus::SE3s> lidar2base; // from tf on its first scan: the lidars are rigid
     core::ScanFragmentCheck fragments;
@@ -74,7 +74,7 @@ public:
     core::Nsec end{0};
     std::int64_t payload = 0;
   };
-  std::vector<MergeInput> merge_inputs;
+  std::vector<MultiLidarInput> multi_lidar_inputs;
   std::map<std::int64_t, std::vector<PayloadSlot>> open_payloads; // one slot per lidar
   std::optional<PayloadAnchor> payload_anchor;
   std::int64_t last_merged_payload = std::numeric_limits<std::int64_t>::min();
