@@ -47,11 +47,6 @@ constexpr rko_lio::core::Nsec MAX_PHASE_SPREAD = 5ms;
 constexpr rko_lio::core::Nsec LIDAR_PERIOD = 100ms;
 constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
 
-std::int64_t payload_of(const rko_lio::ros::ThreadedNode::PayloadAnchor& anchor, const rko_lio::core::Nsec end) {
-  return anchor.payload +
-         std::llround(rko_lio::core::to_seconds(end - anchor.end) / rko_lio::core::to_seconds(LIDAR_PERIOD));
-}
-
 std::int64_t ns_between(const std::chrono::steady_clock::time_point from,
                         const std::chrono::steady_clock::time_point to) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count();
@@ -117,27 +112,26 @@ void ThreadedNode::merge_callback(const sensor_msgs::msg::PointCloud2::ConstShar
   try {
     LidarScan scan = process_lidar_msg(lidar_msg);
     scan.lidar2base.front() = *in.lidar2base;
+    if (!payload_anchor) {
+      payload_anchor = PayloadAnchor{.end = scan.end(), .payload = 0};
+    }
+    const std::int64_t payload =
+        payload_anchor->payload +
+        std::llround(core::to_seconds(scan.end() - payload_anchor->end) / core::to_seconds(LIDAR_PERIOD));
     if (in.fragments.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
                                  static_cast<core::Scalar>(scan.point_count()))) {
       RCLCPP_WARN_STREAM(node->get_logger(),
                          "Dropping a LiDAR scan fragment of " << scan.point_count() << " points from " << in.topic);
       publish_scan_metrics(scan, std::chrono::steady_clock::now(), ScanStatus::skipped,
                            {.input_points = scan.point_count()});
-      if (payload_anchor) {
-        const std::int64_t payload = payload_of(*payload_anchor, scan.end());
-        if (payload > last_merged_payload) {
-          std::vector<PayloadSlot>& slots = open_payloads[payload];
-          slots.resize(merge_inputs.size());
-          slots[input].dropped = true;
-          merge_ready_payloads();
-        }
+      if (payload > last_merged_payload) {
+        std::vector<PayloadSlot>& slots = open_payloads[payload];
+        slots.resize(merge_inputs.size());
+        slots[input].dropped = true;
+        merge_ready_payloads();
       }
       return;
     }
-    if (!payload_anchor) {
-      payload_anchor = PayloadAnchor{.end = scan.end(), .payload = 0};
-    }
-    const std::int64_t payload = payload_of(*payload_anchor, scan.end());
     if (payload <= last_merged_payload) {
       RCLCPP_WARN_STREAM(node->get_logger(),
                          "Dropping a LiDAR scan from " << in.topic << ": its payload was merged without it");
