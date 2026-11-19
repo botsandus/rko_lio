@@ -164,59 +164,63 @@ void ThreadedNode::merge_ready_payloads() {
     last_merged_payload_index = oldest->first;
     std::vector<PayloadSlot> slots = std::move(oldest->second);
     open_payloads.erase(oldest);
-    UTL_PROFILER_SCOPE("rko_lio: merge payload");
-    LidarPayload merged;
-    core::Nsec first_end = core::Nsec::max();
-    core::Nsec last_end = core::Nsec::min();
-    std::string missing_topics;
-    for (std::size_t input = 0; input < slots.size(); ++input) {
-      PayloadSlot& slot = slots[input];
-      if (!slot.scan) {
-        if (!slot.dropped) {
-          missing_topics += " " + multi_lidar_inputs[input].topic;
-        }
-        continue;
-      }
-      LidarPayload& scan = *slot.scan;
-      first_end = std::min(first_end, scan.end());
-      last_end = std::max(last_end, scan.end());
-      merged.timestamps.push_back(std::move(scan.timestamps.front()));
-      merged.clouds.push_back(std::move(scan.clouds.front()));
-      merged.lidar2base.push_back(scan.lidar2base.front());
-      if (scan.ready > merged.ready) {
-        merged.arrival = scan.arrival;
-        merged.ready = scan.ready;
-      }
-    }
-    if (merged.clouds.empty()) {
-      continue;
-    }
-    // upstream includes the wait for the last lidar
-    merged.upstream = utils::to_ns(node->now()) - merged.end();
-    if (last_end - first_end > MAX_PHASE_SPREAD) {
-      const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
-      const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_PHASE_SPREAD).count();
-      RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping unsynchronised lidar scans: their ends differ by "
-                                                  << spread_ms << " ms, more than the " << max_spread_ms
-                                                  << " ms of phase-locked lidars");
-      publish_payload_metrics(merged, std::chrono::steady_clock::now(), PayloadStatus::unsynced,
-                              {.input_points = merged.point_count()});
-      if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
-        RCLCPP_FATAL(
-            node->get_logger(),
-            "%d merge payloads in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
-            "Exiting.",
-            consecutive_unsynced);
-        throw std::runtime_error("lidar_topics: the lidars are not phase-locked");
-      }
-      continue;
-    }
-    consecutive_unsynced = 0;
-    if (!missing_topics.empty()) {
-      RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan in this payload from" << missing_topics);
-    }
-    add_to_lidar_buffer(std::move(merged));
+    merge_payload(std::move(slots));
   }
+}
+
+void ThreadedNode::merge_payload(std::vector<PayloadSlot> slots) {
+  UTL_PROFILER_SCOPE("rko_lio: merge payload");
+  LidarPayload merged;
+  core::Nsec first_end = core::Nsec::max();
+  core::Nsec last_end = core::Nsec::min();
+  std::string missing_topics;
+  for (std::size_t input = 0; input < slots.size(); ++input) {
+    PayloadSlot& slot = slots[input];
+    if (!slot.scan) {
+      if (!slot.dropped) {
+        missing_topics += " " + multi_lidar_inputs[input].topic;
+      }
+      continue;
+    }
+    LidarPayload& scan = *slot.scan;
+    first_end = std::min(first_end, scan.end());
+    last_end = std::max(last_end, scan.end());
+    merged.timestamps.push_back(std::move(scan.timestamps.front()));
+    merged.clouds.push_back(std::move(scan.clouds.front()));
+    merged.lidar2base.push_back(scan.lidar2base.front());
+    if (scan.ready > merged.ready) {
+      merged.arrival = scan.arrival;
+      merged.ready = scan.ready;
+    }
+  }
+  if (merged.clouds.empty()) {
+    return;
+  }
+  // upstream includes the wait for the last lidar
+  merged.upstream = utils::to_ns(node->now()) - merged.end();
+  if (last_end - first_end > MAX_PHASE_SPREAD) {
+    const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
+    const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_PHASE_SPREAD).count();
+    RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping unsynchronised lidar scans: their ends differ by "
+                                                << spread_ms << " ms, more than the " << max_spread_ms
+                                                << " ms of phase-locked lidars");
+    publish_payload_metrics(merged, std::chrono::steady_clock::now(), PayloadStatus::unsynced,
+                            {.input_points = merged.point_count()});
+    if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
+      RCLCPP_FATAL(
+          node->get_logger(),
+          "%d merge payloads in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
+          "Exiting.",
+          consecutive_unsynced);
+      throw std::runtime_error("lidar_topics: the lidars are not phase-locked");
+    }
+    return;
+  }
+  consecutive_unsynced = 0;
+  if (!missing_topics.empty()) {
+    RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan in this payload from" << missing_topics);
+  }
+  add_to_lidar_buffer(std::move(merged));
 }
 
 void ThreadedNode::add_to_lidar_buffer(LidarPayload payload) {

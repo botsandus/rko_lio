@@ -94,6 +94,12 @@ public:
   /** Current LiDAR state estimate. */
   State lidar_state;
 
+  /** Base-frame state propagated from IMU measurements. Runs ahead of `lidar_state` between payloads; reset to the
+   *  optimized lidar pose after each successful registration. Used for gravity compensation and for publishing
+   *  IMU-rate odometry from the ROS wrapper.
+   */
+  State imu_state;
+
   /** IMU bias estimates when initialization is enabled. */
   ImuBias imu_bias;
 
@@ -131,12 +137,6 @@ public:
   /** Restart, treating the next payload as if it were the first. Keeps the IMU bias estimates; forces
    *  `config.initialization_phase` off. */
   void restart();
-
-  /** Base-frame state propagated from IMU measurements. Runs ahead of `lidar_state` between payloads; reset to the
-   *  optimized lidar pose after each successful registration. Used for gravity compensation and for publishing
-   *  IMU-rate odometry from the ROS wrapper.
-   */
-  State imu_state;
 
 private:
   /**
