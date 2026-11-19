@@ -40,7 +40,6 @@
 #include <algorithm>
 #include <array>
 #include <functional>
-#include <numeric>
 #include <sstream>
 
 namespace {
@@ -388,9 +387,7 @@ void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuC
 std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> clouds,
                                                   const std::span<const Timestamps> timestamps,
                                                   const std::span<const Sophus::SE3s> lidar2base) {
-  const std::size_t point_count = std::transform_reduce(clouds.cbegin(), clouds.cend(), std::size_t{0}, std::plus<>(),
-                                                        [](const Vector3sVector& cloud) { return cloud.size(); });
-  payload_stats = {.input_points = point_count, .imu_samples = interval_stats.imu_count};
+  payload_stats = {.input_points = point_count(clouds), .imu_samples = interval_stats.imu_count};
   if (clouds.empty() || clouds.size() != timestamps.size() || clouds.size() != lidar2base.size()) {
     throw InputError("LiDAR payload of " + std::to_string(clouds.size()) + " clouds has " +
                      std::to_string(timestamps.size()) + " timestamp entries and " + std::to_string(lidar2base.size()) +
@@ -402,16 +399,15 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
                        ") does not match its cloud (" + std::to_string(clouds[cloud].size()) + ").");
     }
   }
-  const Nsec payload_start = std::ranges::min(timestamps, {}, &Timestamps::min).min;
-  const Nsec current_lidar_time = std::ranges::max(timestamps, {}, &Timestamps::max).max;
+  const auto [payload_start, current_lidar_time] = payload_start_end(timestamps);
   if (lidar_state.time >= EPSILON_TIME && current_lidar_time - lidar_state.time < MIN_PAYLOAD_INTERVAL) {
     spdlog::warn("Dropping a LiDAR payload that ends {} ms after the previous one.",
                  std::chrono::duration<double, std::milli>(current_lidar_time - lidar_state.time).count());
     return {};
   }
   if (fragment_check_.is_fragment(to_seconds<Scalar>(current_lidar_time - payload_start),
-                                  static_cast<Scalar>(point_count))) {
-    spdlog::warn("Dropping a LiDAR payload fragment of {} points.", point_count);
+                                  static_cast<Scalar>(payload_stats.input_points))) {
+    spdlog::warn("Dropping a LiDAR payload fragment of {} points.", payload_stats.input_points);
     return {};
   }
 
@@ -453,7 +449,7 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
 
   if (preproc_result.keypoints.size() < 10) {
     const std::string error_msg = "Too few ICP keypoints: " + std::to_string(preproc_result.keypoints.size()) +
-                                  " (input points: " + std::to_string(point_count) +
+                                  " (input points: " + std::to_string(payload_stats.input_points) +
                                   ", voxel_size: " + std::to_string(config.voxel_size) +
                                   "). Payload empty/corrupt, or downsampling is too aggressive.";
     throw InputError(error_msg);

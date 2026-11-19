@@ -25,9 +25,15 @@
 #pragma once
 #include "rko_lio/core/scalar.hpp"
 #include <Eigen/Core>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <functional>
+#include <numeric>
 #include <sophus/se3.hpp>
+#include <span>
+#include <utility>
+#include <vector>
 
 // Scalar is either float or double, as configured
 namespace Eigen {
@@ -65,6 +71,23 @@ constexpr T to_seconds(const Nsec d) {
 }
 
 // data structs
+struct Timestamps {
+  Nsec min;
+  Nsec max;
+  TimestampVector per_point;
+};
+
+inline std::size_t point_count(const std::span<const Vector3sVector> clouds) {
+  return std::transform_reduce(clouds.begin(), clouds.end(), std::size_t{0}, std::plus<>(),
+                               [](const Vector3sVector& cloud) { return cloud.size(); });
+}
+
+// the first and the last point stamp over a payload's clouds
+inline std::pair<Nsec, Nsec> payload_start_end(const std::span<const Timestamps> timestamps) {
+  return {std::ranges::min(timestamps, {}, &Timestamps::min).min,
+          std::ranges::max(timestamps, {}, &Timestamps::max).max};
+}
+
 struct State {
   Nsec time{0};
   Sophus::SE3s pose;

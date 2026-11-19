@@ -64,15 +64,9 @@ struct LidarPayload {
   std::chrono::steady_clock::time_point arrival; // entering rko_lio's callback
   std::chrono::steady_clock::time_point ready;   // points converted from the message
 
-  core::Nsec start() const { return std::ranges::min(timestamps, {}, &core::Timestamps::min).min; }
-  core::Nsec end() const { return std::ranges::max(timestamps, {}, &core::Timestamps::max).max; }
-  std::size_t point_count() const {
-    std::size_t count = 0;
-    for (const core::Vector3sVector& cloud : clouds) {
-      count += cloud.size();
-    }
-    return count;
-  }
+  core::Nsec start() const { return core::payload_start_end(timestamps).first; }
+  core::Nsec end() const { return core::payload_start_end(timestamps).second; }
+  std::size_t point_count() const { return core::point_count(clouds); }
 };
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);

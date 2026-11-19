@@ -47,11 +47,6 @@ constexpr rko_lio::core::Nsec LIDAR_PERIOD = 100ms;
 constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
 // a scan more than this many payloads from the anchor is a time step (PTP), not a phase-locked lidar
 constexpr int MAX_PAYLOAD_JUMP = 10;
-
-std::int64_t ns_between(const std::chrono::steady_clock::time_point from,
-                        const std::chrono::steady_clock::time_point to) {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count();
-}
 } // namespace
 
 namespace rko_lio::ros {
@@ -120,34 +115,28 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
     const std::int64_t payload_index =
         payload_anchor->index +
         std::llround(core::to_seconds(scan.end() - payload_anchor->end) / core::to_seconds(LIDAR_PERIOD));
-    if (in.fragment_check.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
-                                      static_cast<core::Scalar>(scan.point_count()))) {
-      RCLCPP_WARN_STREAM(node->get_logger(),
-                         "Dropping a LiDAR scan fragment of " << scan.point_count() << " points from " << in.topic);
+    const auto drop = [&](const std::string_view reason) {
+      RCLCPP_WARN_STREAM(node->get_logger(), "Dropping a LiDAR scan of " << scan.point_count() << " points from "
+                                                                         << in.topic << ": " << reason);
       publish_payload_metrics(scan, std::chrono::steady_clock::now(), PayloadStatus::skipped,
                               {.input_points = scan.point_count()});
+    };
+    if (in.fragment_check.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
+                                      static_cast<core::Scalar>(scan.point_count()))) {
+      drop("a fragment");
       if (payload_index > last_merged_payload_index) {
-        std::vector<PayloadSlot>& slots = open_payloads[payload_index];
-        slots.resize(multi_lidar_inputs.size());
-        slots[input].dropped = true;
+        open_payloads.try_emplace(payload_index, multi_lidar_inputs.size()).first->second[input].dropped = true;
         merge_ready_payloads();
       }
       return;
     }
     if (payload_index <= last_merged_payload_index) {
-      RCLCPP_WARN_STREAM(node->get_logger(),
-                         "Dropping a LiDAR scan from " << in.topic << ": its payload was merged without it");
-      publish_payload_metrics(scan, std::chrono::steady_clock::now(), PayloadStatus::skipped,
-                              {.input_points = scan.point_count()});
+      drop("its payload was merged without it");
       return;
     }
-    std::vector<PayloadSlot>& slots = open_payloads[payload_index];
-    slots.resize(multi_lidar_inputs.size());
+    std::vector<PayloadSlot>& slots = open_payloads.try_emplace(payload_index, multi_lidar_inputs.size()).first->second;
     if (slots[input].scan) {
-      RCLCPP_WARN_STREAM(node->get_logger(),
-                         "Dropping a LiDAR scan from " << in.topic << ": a second one in one payload");
-      publish_payload_metrics(scan, std::chrono::steady_clock::now(), PayloadStatus::skipped,
-                              {.input_points = scan.point_count()});
+      drop("a second one in one payload");
       return;
     }
     if (payload_index > payload_anchor->index) {
@@ -247,7 +236,8 @@ void ThreadedNode::add_to_lidar_buffer(LidarPayload payload) {
     sync_condition_variable.notify_one();
   }
   if (dropped) {
-    publish_payload_metrics(*dropped, std::chrono::steady_clock::now(), PayloadStatus::buffer_full, {});
+    publish_payload_metrics(*dropped, std::chrono::steady_clock::now(), PayloadStatus::buffer_full,
+                            {.input_points = dropped->point_count()});
   }
 }
 
@@ -311,9 +301,9 @@ void ThreadedNode::publish_payload_metrics(const LidarPayload& payload,
   const std::int64_t end_ns = payload.end().count();
   const std::int64_t duration_ns = (payload.end() - payload.start()).count();
   const std::int64_t upstream_ns = payload.upstream.count();
-  const std::int64_t convert_ns = ns_between(payload.arrival, payload.ready);
-  const std::int64_t wait_ns = ns_between(payload.ready, registration_start);
-  const std::int64_t registration_ns = ns_between(registration_start, std::chrono::steady_clock::now());
+  const std::int64_t convert_ns = core::Nsec(payload.ready - payload.arrival).count();
+  const std::int64_t wait_ns = core::Nsec(registration_start - payload.ready).count();
+  const std::int64_t registration_ns = core::Nsec(std::chrono::steady_clock::now() - registration_start).count();
   std_msgs::msg::Float64MultiArray msg;
   std_msgs::msg::MultiArrayDimension& fields = msg.layout.dim.emplace_back();
   fields.label = std::string(PAYLOAD_METRICS_FIELDS);

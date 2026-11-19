@@ -39,11 +39,7 @@ std::vector<Eigen::Vector3s> voxel_down_sample(const std::span<const Vector3sVec
   // the default allocator mallocs once per voxel, pmr cuts that to a handful of arena chunks
   std::pmr::monotonic_buffer_resource arena;
   std::pmr::unordered_map<Eigen::Vector3i, Eigen::Vector3s, VoxelHash> grid{&arena};
-  std::size_t point_count = 0;
-  for (const Vector3sVector& points : clouds) {
-    point_count += points.size();
-  }
-  grid.reserve(point_count);
+  grid.reserve(point_count(clouds));
   for (const Vector3sVector& points : clouds) {
     std::for_each(points.cbegin(), points.cend(),
                   [&](const auto& point) { grid.try_emplace(point_to_voxel(point, inv_voxel_size), point); });
