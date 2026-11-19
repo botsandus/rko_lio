@@ -87,7 +87,6 @@ public:
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();
-  void merge_payload(std::vector<PayloadSlot> slots);
   void add_to_lidar_buffer(LidarPayload payload);
   void registration_loop();
 
