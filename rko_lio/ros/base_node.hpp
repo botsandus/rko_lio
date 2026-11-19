@@ -33,7 +33,6 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <vector>
 // ros
@@ -70,14 +69,6 @@ struct LidarPayload {
 };
 // Shared helper used by both the threaded and sequential nodes.
 core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg);
-
-// payload_metrics layout label, times in ns: upstream = LidarPayload::upstream; convert = arrival to ready; wait =
-// ready to the registration start (an IMU sample past the payload end, or the previous payload); registration = start
-// to the pose. end_ns as a double is rounded to 256 ns; the other values are exact
-constexpr std::string_view PAYLOAD_METRICS_FIELDS = "end_ns,duration_ns,upstream_ns,convert_ns,wait_ns,"
-                                                    "registration_ns,"
-                                                    "status,input_points,keypoints,imu_samples,icp_iterations,"
-                                                    "correspondences,icp_cost,reset_count";
 
 class BaseNode {
 public:
@@ -122,7 +113,7 @@ public:
   std::atomic<bool> atomic_node_running = true;
   // ~/reset sets it; the next registration resets the odometry first, on the registration thread
   std::atomic<bool> atomic_reset_requested = false;
-  std::atomic<std::size_t> reset_count = 0;
+  std::size_t reset_count = 0;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service;
   std::jthread map_publish_thread;
 

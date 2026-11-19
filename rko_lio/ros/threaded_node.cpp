@@ -33,6 +33,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
 using namespace std::literals;
@@ -55,9 +56,8 @@ ThreadedNode::ThreadedNode(const std::string& node_name, const rclcpp::NodeOptio
     : BaseNode(node_name, options) {
   max_lidar_buffer_size = static_cast<size_t>(
       node->declare_parameter<int>("async.max_lidar_buffer_size", static_cast<int>(max_lidar_buffer_size)));
-  if (node->declare_parameter<bool>("publish_payload_metrics", false)) {
-    payload_metrics_publisher =
-        node->create_publisher<std_msgs::msg::Float64MultiArray>("rko_lio/payload_metrics", 100);
+  if (node->declare_parameter<bool>("publish_metrics", false)) {
+    metrics_publisher = node->create_publisher<std_msgs::msg::Float64MultiArray>("rko_lio/metrics", 100);
   }
   for (const std::string& topic : lidar_topics) {
     multi_lidar_inputs.push_back({.topic = topic});
@@ -118,8 +118,8 @@ void ThreadedNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::Con
     const auto drop = [&](const std::string_view reason) {
       RCLCPP_WARN_STREAM(node->get_logger(), "Dropping a LiDAR scan of " << scan.point_count() << " points from "
                                                                          << in.topic << ": " << reason);
-      publish_payload_metrics(scan, std::chrono::steady_clock::now(), PayloadStatus::skipped,
-                              {.input_points = scan.point_count()});
+      publish_metrics(scan, std::chrono::steady_clock::now(), PayloadStatus::skipped,
+                      {.input_points = scan.point_count()});
     };
     if (in.fragment_check.is_fragment(core::to_seconds<core::Scalar>(scan.end() - scan.start()),
                                       static_cast<core::Scalar>(scan.point_count()))) {
@@ -199,8 +199,8 @@ void ThreadedNode::merge_ready_payloads() {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping unsynchronised lidar scans: their ends differ by "
                                                   << spread_ms << " ms, more than the " << max_spread_ms
                                                   << " ms of phase-locked lidars");
-      publish_payload_metrics(merged, std::chrono::steady_clock::now(), PayloadStatus::unsynced,
-                              {.input_points = merged.point_count()});
+      publish_metrics(merged, std::chrono::steady_clock::now(), PayloadStatus::unsynced,
+                      {.input_points = merged.point_count()});
       if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
         RCLCPP_FATAL(
             node->get_logger(),
@@ -236,8 +236,8 @@ void ThreadedNode::add_to_lidar_buffer(LidarPayload payload) {
     sync_condition_variable.notify_one();
   }
   if (dropped) {
-    publish_payload_metrics(*dropped, std::chrono::steady_clock::now(), PayloadStatus::buffer_full,
-                            {.input_points = dropped->point_count()});
+    publish_metrics(*dropped, std::chrono::steady_clock::now(), PayloadStatus::buffer_full,
+                    {.input_points = dropped->point_count()});
   }
 }
 
@@ -267,18 +267,20 @@ void ThreadedNode::registration_loop() {
     try {
       const std::vector<core::Vector3sVector> deskewed_clouds =
           register_payload_locked(std::move(payload.clouds), payload.timestamps, payload.lidar2base);
-      if (!deskewed_clouds.empty()) {
+      if (deskewed_clouds.empty()) {
+        publish_metrics(payload, registration_start, PayloadStatus::skipped, lio->payload_stats);
+      } else {
         publish_tf(lio->lidar_state);
+        publish_odometry(lio->lidar_state, odom_publisher);
+        publish_metrics(payload, registration_start, PayloadStatus::ok, lio->payload_stats);
         publish_lidar_outputs(deskewed_clouds);
       }
-      publish_payload_metrics(payload, registration_start,
-                              deskewed_clouds.empty() ? PayloadStatus::skipped : PayloadStatus::ok, lio->payload_stats);
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping payload: " << ex.what());
-      publish_payload_metrics(payload, registration_start, PayloadStatus::input_error, lio->payload_stats);
+      publish_metrics(payload, registration_start, PayloadStatus::input_error, lio->payload_stats);
     } catch (const core::RegistrationError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Registration failed (" << ex.what() << ").");
-      publish_payload_metrics(payload, registration_start, PayloadStatus::registration_error, lio->payload_stats);
+      publish_metrics(payload, registration_start, PayloadStatus::registration_error, lio->payload_stats);
       if (reset_on_registration_error) {
         reset_odometry();
       } else {
@@ -291,11 +293,11 @@ void ThreadedNode::registration_loop() {
   atomic_node_running = false;
 }
 
-void ThreadedNode::publish_payload_metrics(const LidarPayload& payload,
-                                           const std::chrono::steady_clock::time_point registration_start,
-                                           const PayloadStatus status,
-                                           const core::PayloadStats& stats) {
-  if (!payload_metrics_publisher) {
+void ThreadedNode::publish_metrics(const LidarPayload& payload,
+                                   const std::chrono::steady_clock::time_point registration_start,
+                                   const PayloadStatus status,
+                                   const core::PayloadStats& stats) {
+  if (!metrics_publisher) {
     return;
   }
   const std::int64_t end_ns = payload.end().count();
@@ -304,9 +306,11 @@ void ThreadedNode::publish_payload_metrics(const LidarPayload& payload,
   const std::int64_t convert_ns = core::Nsec(payload.ready - payload.arrival).count();
   const std::int64_t wait_ns = core::Nsec(registration_start - payload.ready).count();
   const std::int64_t registration_ns = core::Nsec(std::chrono::steady_clock::now() - registration_start).count();
+  // rko_lio/metrics, in this order: end_ns, duration_ns, upstream_ns, convert_ns, wait_ns, registration_ns, status,
+  // input_points, keypoints, imu_samples, icp_iterations, correspondences, icp_cost. Times in ns; wait is for an IMU
+  // sample past the payload end, or the previous payload; registration ends with the odometry published. end_ns as a
+  // double is rounded to 256 ns
   std_msgs::msg::Float64MultiArray msg;
-  std_msgs::msg::MultiArrayDimension& fields = msg.layout.dim.emplace_back();
-  fields.label = std::string(PAYLOAD_METRICS_FIELDS);
   msg.data = {
       static_cast<double>(end_ns),
       static_cast<double>(duration_ns),
@@ -321,11 +325,8 @@ void ThreadedNode::publish_payload_metrics(const LidarPayload& payload,
       static_cast<double>(stats.icp_iterations),
       static_cast<double>(stats.correspondences),
       static_cast<double>(stats.icp_cost),
-      static_cast<double>(reset_count),
   };
-  fields.size = static_cast<std::uint32_t>(msg.data.size());
-  fields.stride = fields.size;
-  payload_metrics_publisher->publish(msg);
+  metrics_publisher->publish(msg);
 }
 
 ThreadedNode::~ThreadedNode() {

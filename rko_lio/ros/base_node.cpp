@@ -232,7 +232,6 @@ std::vector<core::Vector3sVector> BaseNode::register_payload_locked(std::vector<
 }
 
 void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_clouds) const {
-  publish_odometry(lio->lidar_state, odom_publisher);
   if (publish_lidar_acceleration) {
     publish_lidar_accel(lio->lidar_state);
   }

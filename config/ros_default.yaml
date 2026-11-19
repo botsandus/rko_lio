@@ -11,7 +11,8 @@ odom_frame: odom
 invert_odom_tf: false
 publish_odom: true  # false: no odometry or reset count is published
 publish_odom_tf: true  # false: the odometry's tf is not broadcast
-publish_payload_metrics: false  # each payload's statistics on rko_lio/payload_metrics (Float64MultiArray, fields in its layout label)
+# each payload's statistics on rko_lio/metrics: Float64MultiArray, field order in ThreadedNode::publish_metrics
+publish_metrics: false
 # reset_on_registration_error: false
 publish_local_map: true
 map_topic: /rko_lio/local_map

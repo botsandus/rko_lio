@@ -108,6 +108,7 @@ public:
         return;
       }
       publish_tf(lio->lidar_state);
+      publish_odometry(lio->lidar_state, odom_publisher);
       publish_lidar_outputs(deskewed_clouds);
     } catch (const core::InputError& ex) {
       RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping payload: " << ex.what());

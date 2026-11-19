@@ -57,7 +57,7 @@ public:
   std::queue<LidarPayload> lidar_buffer;
   size_t max_lidar_buffer_size = 10;
 
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr payload_metrics_publisher;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr metrics_publisher;
 
   // merge state: touched only by the lidar callbacks, which never run at once (one mutually exclusive callback group)
   struct MultiLidarInput {
@@ -90,11 +90,10 @@ public:
   void add_to_lidar_buffer(LidarPayload payload);
   void registration_loop();
 
-  // stats are empty for a payload dropped from the buffer
-  void publish_payload_metrics(const LidarPayload& payload,
-                               const std::chrono::steady_clock::time_point registration_start,
-                               const PayloadStatus status,
-                               const core::PayloadStats& stats);
+  void publish_metrics(const LidarPayload& payload,
+                       const std::chrono::steady_clock::time_point registration_start,
+                       const PayloadStatus status,
+                       const core::PayloadStats& stats);
 
   ~ThreadedNode();
   ThreadedNode(const ThreadedNode&) = delete;
