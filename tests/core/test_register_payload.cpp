@@ -174,9 +174,11 @@ TEST_CASE("deskew = false: register_payload still produces a valid pose", "[regi
   LIO lio(cfg);
   const auto cloud = make_hollow_cube();
 
-  register_cloud(lio, cloud, linspace_timestamps(cloud.size(), 0.0, FIRST_SCAN_END));
+  register_cloud(lio, cloud, Timestamps{.min = Nsec{0}, .max = ns_from_seconds(FIRST_SCAN_END)});
   feed_static_imu(lio, FIRST_SCAN_END + 0.05, SECOND_SCAN_END - 0.05, 10);
-  register_cloud(lio, cloud, instant_timestamps(cloud.size(), SECOND_SCAN_END));
+  register_cloud(
+      lio, cloud,
+      Timestamps{.min = ns_from_seconds(SECOND_SCAN_END - FIRST_SCAN_END), .max = ns_from_seconds(SECOND_SCAN_END)});
 
   REQUIRE_THAT(to_seconds(lio.lidar_state.time), WithinAbs(SECOND_SCAN_END, 1e-9));
   REQUIRE(lio.lidar_state.pose.translation().norm() < 1e-3);

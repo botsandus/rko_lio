@@ -394,7 +394,7 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
                      " extrinsics; it needs one of each per cloud.");
   }
   for (std::size_t cloud = 0; cloud < clouds.size(); ++cloud) {
-    if (clouds[cloud].size() != timestamps[cloud].per_point.size()) {
+    if (config.deskew && clouds[cloud].size() != timestamps[cloud].per_point.size()) {
       throw InputError("LiDAR timestamps size (" + std::to_string(timestamps[cloud].per_point.size()) +
                        ") does not match its cloud (" + std::to_string(clouds[cloud].size()) + ").");
     }

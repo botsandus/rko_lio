@@ -24,6 +24,7 @@
 
 #pragma once
 #include "rko_lio/core/lio.hpp"
+#include "rko_lio/ros/utils/point_cloud_read.hpp"
 // stl
 #include <algorithm>
 #include <atomic>
@@ -81,7 +82,7 @@ public:
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
   core::Nsec publish_map_after = std::chrono::seconds(1);
   rclcpp::Node::SharedPtr node;
-  core::TimestampProcessingConfig timestamp_proc_config;
+  utils::LidarTime lidar_time;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer;
 

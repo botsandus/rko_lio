@@ -41,15 +41,22 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
 namespace rko_lio::ros::utils {
-// both readers skip points with a non-finite coordinate (an organised cloud's empty slots)
-core::Vector3sVector point_cloud2_to_eigen(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
-
-struct RawScan {
-  core::Vector3sVector points;
-  std::vector<double> timestamps;
+// a lidar's per-point time: one scalar field in a fixed unit, an offset from the header stamp or absolute
+struct LidarTime {
+  std::string field; // empty: no per-point time, every point at the header stamp
+  core::Nsec unit;
+  bool relative;
 };
 
-RawScan point_cloud2_to_eigen_with_timestamps(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
+struct Scan {
+  core::Vector3sVector points;
+  core::Timestamps timestamps;
+};
+
+// Skips points with a non-finite coordinate (an organised cloud's empty slots); fills timestamps.per_point when
+// lidar_time.field is set. Throws std::invalid_argument if lidar_time.field is set but not a uint32, float32 or float64 field,
+// core::InputError for a scan without a finite point.
+Scan point_cloud2_to_scan(const sensor_msgs::msg::PointCloud2& msg, const LidarTime& lidar_time);
 
 struct LidarDeserializer {
   explicit LidarDeserializer(std::string_view type);

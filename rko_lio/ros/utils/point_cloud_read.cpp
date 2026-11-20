@@ -25,16 +25,21 @@
 #include "point_cloud_read.hpp"
 #include "rko_lio/core/error.hpp"
 #include "rosbag.hpp"
+#include "time.hpp"
 #include <point_cloud_interfaces/msg/compressed_point_cloud2.hpp>
 #include <rclcpp/utilities.hpp>
 #include <rclcpp/version.h>
 #include <spdlog/spdlog.h>
 // stl
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace rko_lio::ros::utils {
@@ -42,76 +47,89 @@ using point_cloud_interfaces::msg::CompressedPointCloud2;
 using sensor_msgs::msg::PointCloud2;
 using sensor_msgs::msg::PointField;
 
-core::Vector3sVector point_cloud2_to_eigen(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg) {
-  const size_t point_count = static_cast<size_t>(msg->height) * msg->width;
-  core::Vector3sVector points;
-  points.reserve(point_count);
-  sensor_msgs::PointCloud2ConstIterator<float> msg_x(*msg, "x");
-  sensor_msgs::PointCloud2ConstIterator<float> msg_y(*msg, "y");
-  sensor_msgs::PointCloud2ConstIterator<float> msg_z(*msg, "z");
+namespace {
+using sensor_msgs::PointCloud2ConstIterator;
+
+Scan read_scan_without_time(const PointCloud2& msg) {
+  const size_t point_count = static_cast<size_t>(msg.height) * msg.width;
+  const core::Nsec stamp = to_ns(msg.header.stamp);
+  Scan scan{.timestamps = {.min = stamp, .max = stamp}};
+  scan.points.reserve(point_count);
+  PointCloud2ConstIterator<float> msg_x(msg, "x");
+  PointCloud2ConstIterator<float> msg_y(msg, "y");
+  PointCloud2ConstIterator<float> msg_z(msg, "z");
   for (size_t i = 0; i < point_count; ++i, ++msg_x, ++msg_y, ++msg_z) {
     if (std::isfinite(*msg_x) && std::isfinite(*msg_y) && std::isfinite(*msg_z)) {
-      points.emplace_back(*msg_x, *msg_y, *msg_z);
+      scan.points.emplace_back(*msg_x, *msg_y, *msg_z);
     }
   }
-  return points;
+  if (scan.points.empty()) {
+    throw core::InputError("A scan of " + std::to_string(point_count) + " points has no finite point.");
+  }
+  return scan;
 }
 
-RawScan point_cloud2_to_eigen_with_timestamps(const PointCloud2::ConstSharedPtr& msg) {
-  using sensor_msgs::PointCloud2ConstIterator;
-  // getting points and time in a single cycle loop
-  const size_t point_count = static_cast<size_t>(msg->height) * msg->width;
-  RawScan scan;
+template <typename T>
+Scan read_scan(const PointCloud2& msg, const LidarTime& lidar_time) {
+  const size_t point_count = static_cast<size_t>(msg.height) * msg.width;
+  const core::Nsec origin = lidar_time.relative ? to_ns(msg.header.stamp) : core::Nsec{0};
+  Scan scan{.timestamps = {.min = core::Nsec::max(), .max = core::Nsec::min()}};
   scan.points.reserve(point_count);
-  scan.timestamps.reserve(point_count);
-  PointCloud2ConstIterator<float> msg_x(*msg, "x");
-  PointCloud2ConstIterator<float> msg_y(*msg, "y");
-  PointCloud2ConstIterator<float> msg_z(*msg, "z");
-
-  const auto& timestamp_field = std::invoke([&msg]() -> PointField {
-    for (const PointField& field : msg->fields) {
-      if ((field.name == "t" || field.name == "time" || field.name == "timestamp" || field.name == "timestamps" ||
-           field.name == "stamps") &&
-          field.count != 0U) {
-        return field;
-      }
+  scan.timestamps.per_point.reserve(point_count);
+  PointCloud2ConstIterator<float> msg_x(msg, "x");
+  PointCloud2ConstIterator<float> msg_y(msg, "y");
+  PointCloud2ConstIterator<float> msg_z(msg, "z");
+  PointCloud2ConstIterator<T> msg_time(msg, lidar_time.field);
+  for (size_t i = 0; i < point_count; ++i, ++msg_x, ++msg_y, ++msg_z, ++msg_time) {
+    if (!std::isfinite(*msg_x) || !std::isfinite(*msg_y) || !std::isfinite(*msg_z)) {
+      continue;
     }
-    throw core::InputError(
-        "No per-point timestamp field (t/time/timestamp/timestamps/stamps). Disable deskew, or add timestamps.");
-  });
-
-  // templated lambda (auto) ftw
-  const auto extract_points_and_timestamps = [&](auto&& time_iter) {
-    for (size_t i = 0; i < point_count; ++i, ++msg_x, ++msg_y, ++msg_z, ++time_iter) {
-      if (std::isfinite(*msg_x) && std::isfinite(*msg_y) && std::isfinite(*msg_z)) {
-        scan.points.emplace_back(*msg_x, *msg_y, *msg_z);
-        scan.timestamps.emplace_back(static_cast<double>(*time_iter));
+    scan.points.emplace_back(*msg_x, *msg_y, *msg_z);
+    const core::Nsec offset = std::invoke([&] {
+      if constexpr (std::is_integral_v<T>) {
+        return static_cast<std::int64_t>(*msg_time) * lidar_time.unit;
+      } else {
+        return core::Nsec(std::llround(static_cast<double>(*msg_time) * static_cast<double>(lidar_time.unit.count())));
       }
-    }
-  };
-
-  switch (timestamp_field.datatype) {
-  case PointField::UINT32: {
-    PointCloud2ConstIterator<uint32_t> msg_time(*msg, timestamp_field.name);
-    extract_points_and_timestamps(msg_time);
-    break;
+    });
+    const core::Nsec stamp = origin + offset;
+    scan.timestamps.min = std::min(scan.timestamps.min, stamp);
+    scan.timestamps.max = std::max(scan.timestamps.max, stamp);
+    scan.timestamps.per_point.push_back(stamp);
   }
-  case PointField::FLOAT32: {
-    PointCloud2ConstIterator<float> msg_time(*msg, timestamp_field.name);
-    extract_points_and_timestamps(msg_time);
-    break;
+  if (scan.points.empty()) {
+    throw core::InputError("A scan of " + std::to_string(point_count) + " points has no finite point.");
   }
-  case PointField::FLOAT64: {
-    PointCloud2ConstIterator<double> msg_time(*msg, timestamp_field.name);
-    extract_points_and_timestamps(msg_time);
-    break;
-  }
-  default:
-    throw core::InputError("Unsupported timestamp field datatype " + std::to_string(timestamp_field.datatype) +
-                           ". Please open an issue.");
-  }
-
   return scan;
+}
+} // namespace
+
+Scan point_cloud2_to_scan(const PointCloud2& msg, const LidarTime& lidar_time) {
+  if (lidar_time.field.empty()) {
+    return read_scan_without_time(msg);
+  }
+  const auto field = std::ranges::find(msg.fields, lidar_time.field, &PointField::name);
+  if (field == msg.fields.end()) {
+    std::string field_names;
+    for (const PointField& msg_field : msg.fields) {
+      field_names += " " + msg_field.name;
+    }
+    throw std::invalid_argument(
+        "lidar_time.field '" + lidar_time.field +
+        "' is not a field of the lidar's PointCloud2 (its fields:" + field_names +
+        "). Set lidar_time.field to its per-point time field, or, with deskew:=false and no time field, to \"\".");
+  }
+  switch (field->datatype) {
+  case PointField::UINT32:
+    return read_scan<std::uint32_t>(msg, lidar_time);
+  case PointField::FLOAT32:
+    return read_scan<float>(msg, lidar_time);
+  case PointField::FLOAT64:
+    return read_scan<double>(msg, lidar_time);
+  default:
+    throw std::invalid_argument("lidar_time.field '" + lidar_time.field + "' has PointField datatype " +
+                                std::to_string(field->datatype) + "; supported are uint32, float32 and float64.");
+  }
 }
 
 LidarDeserializer::LidarDeserializer(const std::string_view type) {

@@ -207,24 +207,21 @@ configurable_parameters = [
         "type": "bool",
         "description": "Restrict the pose to x, y and yaw: z, roll and pitch stay at their initial values. The base frame must be parallel to the floor.",
     },
-    # lidar per-point timestamp processing parameters
+    # lidar per-point time parameters
     {
-        "name": "lidar_timestamps.multiplier_to_seconds",
-        "default": "0.0",
-        "type": "float",
-        "description": "Multiplier to convert per-point raw timestamps to seconds. Default 0.0 tries to automatically handle seconds or nanoseconds. Specify for any other, e.g., if timestamps are in microseconds, set to 1e-6.",
+        "name": "lidar_time.field",
+        "default": "t",
+        "description": "Per-point time field (uint32, float32 or float64); empty for none, set in config_file, needs deskew:=false",
     },
     {
-        "name": "lidar_timestamps.force_absolute",
-        "default": "false",
-        "type": "bool",
-        "description": "Force treat per-point timestamps as absolute times (wall-clock), bypassing heuristic detection.",
+        "name": "lidar_time.unit",
+        "default": "ns",
+        "description": "Unit of the per-point time field: ns, us or s",
     },
     {
-        "name": "lidar_timestamps.force_relative",
-        "default": "false",
-        "type": "bool",
-        "description": "Force treat per-point timestamps as offsets relative to each message's header time.",
+        "name": "lidar_time.reference",
+        "default": "relative",
+        "description": "Per-point time relative to the header stamp, or absolute",
     },
     # threaded node specific parameters
     {
@@ -419,15 +416,6 @@ def validate_parameters(merged: dict, mode: str, odom_at_imu_rate: bool, autodet
         leaked_async = [p for p in merged if p.startswith("async.")]
         if leaked_async:
             print(f"[WARN] async.* params ignored (not running async pipeline): {leaked_async}")
-
-    # warn about legacy lts_* keys
-    legacy_lts = [p for p in merged if p.startswith("lts_")]
-    if legacy_lts:
-        print(
-            f"[WARN] Legacy lidar timestamp parameters {legacy_lts} are ignored. "
-            "Rename them to 'lidar_timestamps.<suffix>' (e.g. lts_force_absolute "
-            "-> lidar_timestamps.force_absolute)."
-        )
 
 
 def prepare_rviz_config(rviz_config_file: Path, parameters: dict) -> Path:

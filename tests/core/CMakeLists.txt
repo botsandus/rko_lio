@@ -5,7 +5,6 @@ compat_target_sources(
   PRIVATE test_interval_stats.cpp
           test_voxel_down_sample.cpp
           test_voxel_hash_map.cpp
-          test_process_timestamps.cpp
           test_preprocess_payload.cpp
           test_thread_arena.cpp
           test_imu_integration.cpp

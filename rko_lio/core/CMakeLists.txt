@@ -33,7 +33,6 @@ compat_target_sources(
           deskew.cpp
           voxel_hash_map.cpp
           voxel_down_sample.cpp
-          process_timestamps.cpp
           preprocess_payload.cpp
   PUBLIC
   FILE_SET
@@ -42,7 +41,6 @@ compat_target_sources(
         ../../rko_lio/core/error.hpp
         ../../rko_lio/core/lio.hpp
         ../../rko_lio/core/preprocess_payload.hpp
-        ../../rko_lio/core/process_timestamps.hpp
         ../../rko_lio/core/voxel_hash_map.hpp
         ../../rko_lio/core/util.hpp
         ../../rko_lio/core/voxel_down_sample.hpp

@@ -27,6 +27,7 @@
 #include "rko_lio/ros/utils/utils.hpp"
 #include <UTL/profiler.hpp>
 // other
+#include <map>
 #include <optional>
 #include <rclcpp/version.h>
 #include <spdlog/spdlog.h>
@@ -133,13 +134,21 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   lio_config.flat = node->declare_parameter<bool>("flat", lio_config.flat);
   lio = std::make_unique<core::LIO>(lio_config);
 
-  // Lidar per-point timestamp processing params, namespaced under lidar_timestamps.*
-  timestamp_proc_config.multiplier_to_seconds = node->declare_parameter<double>(
-      "lidar_timestamps.multiplier_to_seconds", timestamp_proc_config.multiplier_to_seconds);
-  timestamp_proc_config.force_absolute =
-      node->declare_parameter<bool>("lidar_timestamps.force_absolute", timestamp_proc_config.force_absolute);
-  timestamp_proc_config.force_relative =
-      node->declare_parameter<bool>("lidar_timestamps.force_relative", timestamp_proc_config.force_relative);
+  lidar_time.field = node->declare_parameter<std::string>("lidar_time.field", "t");
+  if (lio->config.deskew && lidar_time.field.empty()) {
+    throw std::invalid_argument("lidar_time.field is empty: deskewing needs per-point time. Set it, or deskew:=false.");
+  }
+  const std::map<std::string, core::Nsec> units{{"ns", 1ns}, {"us", 1us}, {"s", 1s}};
+  const std::string unit = node->declare_parameter<std::string>("lidar_time.unit", "ns");
+  if (!units.contains(unit)) {
+    throw std::invalid_argument("lidar_time.unit is '" + unit + "'; it is one of ns, us and s.");
+  }
+  lidar_time.unit = units.at(unit);
+  const std::string reference = node->declare_parameter<std::string>("lidar_time.reference", "relative");
+  if (reference != "relative" && reference != "absolute") {
+    throw std::invalid_argument("lidar_time.reference is '" + reference + "'; it is relative or absolute.");
+  }
+  lidar_time.relative = reference == "relative";
 
   RCLCPP_INFO_STREAM(node->get_logger(),
                      "Subscribed to IMU: "
@@ -198,19 +207,10 @@ LidarPayload BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Co
   const auto arrival = std::chrono::steady_clock::now();
   const core::Nsec arrival_node_clock = utils::to_ns(node->now());
   UTL_PROFILER_SCOPE("rko_lio: convert message");
-  const core::Nsec header_stamp = utils::to_ns(lidar_msg->header.stamp);
   LidarPayload payload{.arrival = arrival};
-  if (lio->config.deskew) {
-    utils::RawScan raw = utils::point_cloud2_to_eigen_with_timestamps(lidar_msg);
-    payload.timestamps.push_back(core::process_timestamps(raw.timestamps, header_stamp, timestamp_proc_config));
-    payload.clouds.push_back(std::move(raw.points));
-  } else {
-    RCLCPP_WARN_STREAM_ONCE(node->get_logger(),
-                            "Deskewing is disabled. Populating timestamps with static header time.");
-    payload.clouds.push_back(utils::point_cloud2_to_eigen(lidar_msg));
-    payload.timestamps.push_back({.min = header_stamp, .max = header_stamp});
-    payload.timestamps.front().per_point.assign(payload.clouds.front().size(), header_stamp);
-  }
+  utils::Scan scan = utils::point_cloud2_to_scan(*lidar_msg, lidar_time);
+  payload.clouds.push_back(std::move(scan.points));
+  payload.timestamps.push_back(std::move(scan.timestamps));
   payload.lidar2base.push_back(lidar2base);
   payload.upstream = arrival_node_clock - payload.end();
   payload.ready = std::chrono::steady_clock::now();

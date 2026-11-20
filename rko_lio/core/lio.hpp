@@ -28,7 +28,6 @@
  */
 
 #pragma once
-#include "process_timestamps.hpp"
 #include "util.hpp"
 #include "voxel_hash_map.hpp"
 
@@ -126,7 +125,7 @@ public:
    * Register a payload: one scan per lidar (one, or several phase-locked ones), as one pose at the payload's last
    * point, applying deskewing based on the initial motion guess and clipping points beyond valid range.
    * @param clouds One scan per lidar, each in its lidar's frame.
-   * @param timestamps One entry per cloud: its per-point timestamps and its own min/max.
+   * @param timestamps One entry per cloud: its own min/max, and its per-point timestamps if deskewing.
    * @param lidar2base One entry per cloud: the extrinsic from its lidar to the base frame.
    * @return The deskewed and clipped clouds, in the base frame; empty if the payload was skipped.
    */

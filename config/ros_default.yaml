@@ -9,10 +9,9 @@
 odom_topic: /rko_lio/odom
 odom_frame: odom
 invert_odom_tf: false
-publish_odom: true  # false: no odometry or reset count is published
-publish_odom_tf: true  # false: the odometry's tf is not broadcast
-# each payload's statistics on rko_lio/metrics: Float64MultiArray, field order in ThreadedNode::publish_metrics
-publish_metrics: false
+publish_odom: true  # also the reset count
+publish_odom_tf: true
+publish_metrics: false  # rko_lio/metrics, field order in ThreadedNode::publish_metrics
 # reset_on_registration_error: false
 publish_local_map: true
 map_topic: /rko_lio/local_map
@@ -24,7 +23,7 @@ odom_at_imu_rate: false
 
 # lio config
 deskew: true
-deskew_per_stamp: false  # for lidars whose points share exact stamps, for example one per column
+deskew_per_stamp: false  # one deskew transform per distinct point stamp
 voxel_size: 1.0
 max_range: 100.0
 min_range: 1.0
@@ -34,7 +33,7 @@ max_num_threads: 1
 initialization_phase: false
 double_downsample: true
 flat: false
-# Lidar per-point timestamp processing - set when the heuristic fails.
-# lidar_timestamps.multiplier_to_seconds: 0.0   # 0.0 = autodetect; e.g. 1e-6 for microseconds
-# lidar_timestamps.force_absolute: false
-# lidar_timestamps.force_relative: false
+# per-point time: one uint32, float32 or float64 field
+lidar_time.field: t             # "" for none, which needs deskew: false
+lidar_time.unit: ns             # ns, us or s
+lidar_time.reference: relative  # relative to the header stamp, or absolute
