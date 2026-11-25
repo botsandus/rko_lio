@@ -24,25 +24,20 @@
 
 #pragma once
 
-#include <Eigen/Core>
+#include <rko_lio/core/util.hpp>
+
+#include <geometry_msgs/msg/vector3.hpp>
 
 namespace rko_lio::ros::utils {
-void eigen_vector_to_ros_xyz(const Eigen::Vector3s& vector, auto& ros_vector)
-  requires requires(decltype(ros_vector) v) {
-    { v.x } -> std::convertible_to<double>;
-    { v.y } -> std::convertible_to<double>;
-    { v.z } -> std::convertible_to<double>;
-  }
-{
-  // NOLINTBEGIN(cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
-  ros_vector.x = vector[0];
-  ros_vector.y = vector[1];
-  ros_vector.z = vector[2];
-  // NOLINTEND(cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
+inline Eigen::Vector3s ros_to_eigen_vector3(const geometry_msgs::msg::Vector3& vector) {
+  return Eigen::Vector3d(vector.x, vector.y, vector.z).cast<core::Scalar>();
 }
 
-template <typename T>
-Eigen::Vector3s ros_xyz_to_eigen_vector(const T& ros_vector) {
-  return Eigen::Vector3s(ros_vector.x, ros_vector.y, ros_vector.z);
+inline geometry_msgs::msg::Vector3 eigen_to_ros_vector3(const Eigen::Vector3s& vector) {
+  geometry_msgs::msg::Vector3 ros_vector;
+  ros_vector.x = vector.x();
+  ros_vector.y = vector.y();
+  ros_vector.z = vector.z();
+  return ros_vector;
 }
-}; // namespace rko_lio::ros::utils
+} // namespace rko_lio::ros::utils

@@ -51,14 +51,11 @@ std::shared_ptr<T> deserialize(const rclcpp::SerializedMessage& serialized_msg) 
 class BufferableBag {
 public:
   // `topics` are returned by PopNextMessage. /tf_static is loaded into `tf_buffer` up front, ignoring
-  // `skip_from_start`, and /tf is streamed in as the bag is read unless `ingest_dynamic_tf` is false.
-  // `skip_from_start` is an offset from the bag start.
+  // `skip_from_start`, and /tf is streamed in as the bag is read. `skip_from_start` is an offset from the bag start.
   BufferableBag(const std::string& bag_path,
                 const std::vector<std::string>& topics,
                 std::shared_ptr<tf2::BufferCore> tf_buffer,
-                const tf2::Duration skip_from_start = tf2::durationFromSec(0.0),
-                const std::chrono::seconds buffer_size = std::chrono::seconds(1),
-                const bool ingest_dynamic_tf = true);
+                const tf2::Duration skip_from_start = tf2::durationFromSec(0.0));
 
   size_t message_count() const;
   // empty if the bag does not hold `topic`
@@ -66,7 +63,6 @@ public:
   void BufferMessages();
   rosbag2_storage::SerializedBagMessage PopNextMessage();
   bool finished() const;
-  void close() const;
 
 private:
   void load_tf_static(const std::string& bag_path);
@@ -76,7 +72,7 @@ private:
   std::unique_ptr<rosbag2_cpp::Reader> bag_reader_;
   rclcpp::Serialization<tf2_msgs::msg::TFMessage> serializer_;
   std::queue<rosbag2_storage::SerializedBagMessage> buffer_;
-  std::chrono::seconds buffer_size_;
+  static constexpr std::chrono::seconds buffer_size{1};
   std::vector<std::string> topics_;
   size_t message_count_{0};
 };

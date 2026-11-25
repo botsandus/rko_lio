@@ -22,24 +22,19 @@
  * SOFTWARE.
  */
 
+#include "base_node.hpp"
 #include "rko_lio/ros/utils/point_cloud_read.hpp"
-#include "threaded_node.hpp"
+#include <rclcpp_components/register_node_macro.hpp>
 
 namespace rko_lio::ros {
 namespace {
-class OnlineNode : public ThreadedNode {
+class OnlineNode : public BaseNode {
 public:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
   rclcpp::SubscriptionBase::SharedPtr lidar_sub;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> multi_lidar_subs;
 
-  OnlineNode(const OnlineNode&) = delete;
-  OnlineNode(OnlineNode&&) = delete;
-  OnlineNode& operator=(const OnlineNode&) = delete;
-  OnlineNode& operator=(OnlineNode&&) = delete;
-  ~OnlineNode() = default;
-
-  explicit OnlineNode(const rclcpp::NodeOptions& options) : ThreadedNode("rko_lio_online_node", options) {
+  explicit OnlineNode(const rclcpp::NodeOptions& options) : BaseNode("rko_lio_online_node", options) {
     const auto qos_imu = rclcpp::SensorDataQoS().keep_last(100);
     const auto qos_lidar = rclcpp::SensorDataQoS().keep_last(10);
 
@@ -60,12 +55,11 @@ public:
     }
   }
 
-  rclcpp::node_interfaces::NodeBaseInterface::SharedPtr get_node_base_interface() {
+  rclcpp::node_interfaces::NodeBaseInterface::SharedPtr get_node_base_interface() const {
     return node->get_node_base_interface();
   }
 };
 } // namespace
 } // namespace rko_lio::ros
 
-#include <rclcpp_components/register_node_macro.hpp>
 RCLCPP_COMPONENTS_REGISTER_NODE(rko_lio::ros::OnlineNode)

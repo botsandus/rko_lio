@@ -28,6 +28,7 @@
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rko_lio/core/util.hpp>
+#include <rko_lio/ros/utils/ros_vectors.hpp>
 
 #include <optional>
 #include <rclcpp/logger.hpp>
@@ -72,38 +73,30 @@ inline geometry_msgs::msg::Transform sophus_to_transform(const Sophus::SE3s& T) 
 inline Sophus::SE3s transform_to_sophus(const geometry_msgs::msg::TransformStamped& transform) {
   const auto& t = transform.transform;
   return {Eigen::Quaterniond(t.rotation.w, t.rotation.x, t.rotation.y, t.rotation.z).cast<core::Scalar>(),
-          Eigen::Vector3d(t.translation.x, t.translation.y, t.translation.z).cast<core::Scalar>()};
+          ros_to_eigen_vector3(t.translation)};
 }
 
+// the latest transform from from_frame to to_frame; nullopt, with a warning, while tf does not have it
 inline std::optional<Sophus::SE3s> get_transform(const std::shared_ptr<tf2_ros::Buffer>& tf_buffer,
                                                  const std::string& from_frame,
-                                                 const std::string& to_frame,
-                                                 const std::chrono::nanoseconds time,
-                                                 const std::chrono::nanoseconds timeout = std::chrono::nanoseconds(0),
-                                                 const bool warn_when_unavailable = true) {
-  geometry_msgs::msg::TransformStamped from_to_transform;
-  const tf2::TimePoint tf_time{time};
-  const tf2::Duration tf_timeout{timeout};
+                                                 const std::string& to_frame) {
+  const tf2::TimePoint tf_time = tf2::TimePointZero;
   try {
     tf_buffer->_validateFrameId("from_frame", from_frame);
     tf_buffer->_validateFrameId("to frame", to_frame);
-    const std::unique_ptr<std::string> error_str = std::make_unique<std::string>();
-    if (!tf_buffer->canTransform(to_frame, from_frame, tf_time, tf_timeout, error_str.get())) {
-      if (warn_when_unavailable) {
-        RCLCPP_WARN_STREAM(rclcpp::get_logger("transform lookup"),
-                           "Cannot transform from: " << from_frame << " -> to: " << to_frame << " at time: "
-                                                     << time.count() << "ns because of: " << *error_str);
-      }
+    std::string error_str;
+    if (!tf_buffer->canTransform(to_frame, from_frame, tf_time, tf2::Duration{0}, &error_str)) {
+      RCLCPP_WARN_STREAM(rclcpp::get_logger("transform lookup"),
+                         "Cannot transform from: " << from_frame << " -> to: " << to_frame
+                                                   << " because of: " << error_str);
       return std::nullopt;
     }
-    from_to_transform = tf_buffer->lookupTransform(to_frame, from_frame, tf_time);
-    return transform_to_sophus(from_to_transform);
+    return transform_to_sophus(tf_buffer->lookupTransform(to_frame, from_frame, tf_time));
   } catch (const tf2::InvalidArgumentException& e) {
     RCLCPP_WARN_STREAM(rclcpp::get_logger("transform lookup"),
                        "TF lookup error (InvalidArgumentException): " << e.what());
     RCLCPP_WARN_STREAM(rclcpp::get_logger("transform lookup"),
-                       "Arguments are, to_frame: " << to_frame << ", from_frame: " << from_frame
-                                                   << ", time(ns): " << time.count());
+                       "Arguments are, to_frame: " << to_frame << ", from_frame: " << from_frame);
   } catch (const tf2::LookupException& e) {
     RCLCPP_WARN_STREAM(rclcpp::get_logger("transform lookup"), "TF lookup error (LookupException): " << e.what());
   } catch (const tf2::TransformException& ex) {

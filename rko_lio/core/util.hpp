@@ -32,7 +32,6 @@
 #include <numeric>
 #include <sophus/se3.hpp>
 #include <span>
-#include <utility>
 #include <vector>
 
 // Scalar is either float or double, as configured
@@ -83,9 +82,15 @@ inline std::size_t point_count(const std::span<const Vector3sVector> clouds) {
 }
 
 // the first and the last point stamp over a payload's clouds
-inline std::pair<Nsec, Nsec> payload_start_end(const std::span<const Timestamps> timestamps) {
-  return {std::ranges::min(timestamps, {}, &Timestamps::min).min,
-          std::ranges::max(timestamps, {}, &Timestamps::max).max};
+struct PayloadSpan {
+  Nsec start;
+  Nsec end;
+};
+inline PayloadSpan payload_span(const std::span<const Timestamps> timestamps) {
+  return {
+      .start = std::ranges::min_element(timestamps, {}, &Timestamps::min)->min,
+      .end = std::ranges::max_element(timestamps, {}, &Timestamps::max)->max,
+  };
 }
 
 struct State {
@@ -93,7 +98,6 @@ struct State {
   Sophus::SE3s pose;
   Eigen::Vector3s linear_velocity = Eigen::Vector3s::Zero();
   Eigen::Vector3s angular_velocity = Eigen::Vector3s::Zero();
-  Eigen::Vector3s linear_acceleration = Eigen::Vector3s::Zero();
 };
 
 /** Constant-motion model anchored at the last registered state */

@@ -11,15 +11,11 @@ odom_frame: odom
 invert_odom_tf: false
 publish_odom: true  # also the reset count
 publish_odom_tf: true
-publish_metrics: false  # rko_lio/metrics, field order in ThreadedNode::publish_metrics
+publish_metrics: false  # rko_lio/metrics, field order in BaseNode::publish_metrics
 # reset_on_registration_error: false
 publish_local_map: true
 map_topic: /rko_lio/local_map
 publish_deskewed_scan: true
-odom_at_imu_rate: false
-# IMU-rate seq pipeline (used when launched with odom_at_imu_rate:=true and mode:=online):
-# seq.odom_at_imu_rate_topic: rko_lio/odom_at_imu_rate
-# seq.tf_at_imu_rate: false
 
 # lio config
 deskew: true

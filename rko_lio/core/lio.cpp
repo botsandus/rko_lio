@@ -226,18 +226,16 @@ void LIO::initialize(const Nsec lidar_time) {
   if (!config.flat) {
     lidar_state.pose.so3() = initial_rotation;
   }
-  imu_state = lidar_state;
 
   lidar_state.time = lidar_time;
-  imu_state.time = lidar_time;
 
-  const Eigen::Vector3s local_gravity = imu_state.pose.so3().inverse() * gravity();
+  const Eigen::Vector3s local_gravity = lidar_state.pose.so3().inverse() * gravity();
   imu_bias.accelerometer = avg_accel + local_gravity;
   imu_bias.gyroscope = avg_gyro;
 
   initialized_ = true;
   spdlog::info("Odometry map frame initialized using {} IMU measurements. Estimated initial rotation [se(3)] is {}",
-               interval_stats.imu_count, streamed(imu_state.pose.so3().log().transpose()));
+               interval_stats.imu_count, streamed(lidar_state.pose.so3().log().transpose()));
   spdlog::info("Estimated accel bias: {}, gyro bias: {}", streamed(imu_bias.accelerometer.transpose()),
                streamed(imu_bias.gyroscope.transpose()));
 }
@@ -246,7 +244,7 @@ std::vector<Vector3sVector> LIO::bootstrap_first_payload(std::vector<Vector3sVec
                                                          const std::span<const Sophus::SE3s> lidar2base,
                                                          const Nsec current_lidar_time) {
   lidar_state.time = current_lidar_time;
-  imu_state = lidar_state;
+  imu = {.rotation = lidar_state.pose.so3(), .time = lidar_state.time};
   to_base_frame(clouds, lidar2base);
   auto preproc = preprocess_payload(std::move(clouds), config);
   if (!config.initialization_phase) {
@@ -300,11 +298,7 @@ void LIO::add_imu_measurement(const ImuControl& base_imu) {
     return;
   }
 
-  if (imu_state.time < EPSILON_TIME) {
-    imu_state = lidar_state;
-  }
-
-  const auto dt = to_seconds<Scalar>(base_imu.time - imu_state.time);
+  const auto dt = to_seconds<Scalar>(base_imu.time - imu.time);
 
   if (dt < 0.0) {
     spdlog::warn("Skipping IMU message from the past.");
@@ -317,20 +311,13 @@ void LIO::add_imu_measurement(const ImuControl& base_imu) {
   });
   const Eigen::Vector3s unbiased_accel = base_imu.acceleration - imu_bias.accelerometer;
 
-  const Eigen::Vector3s local_gravity = imu_state.pose.so3().inverse() * gravity();
+  const Eigen::Vector3s local_gravity = imu.rotation.inverse() * gravity();
   const Eigen::Vector3s compensated_accel = std::invoke([&]() -> Eigen::Vector3s {
     const Eigen::Vector3s compensated = unbiased_accel + local_gravity;
     return config.flat ? Eigen::Vector3s(compensated.x(), compensated.y(), 0) : compensated;
   });
 
-  // imu state update
-  Eigen::Vector6s tau;
-  tau.head<3>() = imu_state.linear_velocity * dt + compensated_accel * square(dt) / 2;
-  tau.tail<3>() = unbiased_ang_vel * dt;
-  imu_state.pose = imu_state.pose * Sophus::SE3s::exp(tau);
-  imu_state.linear_velocity += compensated_accel * dt;
-  imu_state.angular_velocity = unbiased_ang_vel;
-  imu_state.time = base_imu.time;
+  imu = {.rotation = imu.rotation * Sophus::SO3s::exp(unbiased_ang_vel * dt), .time = base_imu.time};
 
   interval_stats.update(unbiased_ang_vel, unbiased_accel, compensated_accel);
 
@@ -399,7 +386,7 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
                        ") does not match its cloud (" + std::to_string(clouds[cloud].size()) + ").");
     }
   }
-  const auto [payload_start, current_lidar_time] = payload_start_end(timestamps);
+  const auto [payload_start, current_lidar_time] = payload_span(timestamps);
   if (lidar_state.time >= EPSILON_TIME && current_lidar_time - lidar_state.time < MIN_PAYLOAD_INTERVAL) {
     spdlog::warn("Dropping a LiDAR payload that ends {} ms after the previous one.",
                  std::chrono::duration<double, std::milli>(current_lidar_time - lidar_state.time).count());
@@ -466,23 +453,20 @@ std::vector<Vector3sVector> LIO::register_payload(std::vector<Vector3sVector> cl
     payload_stats.correspondences = icp_result.correspondences;
     payload_stats.icp_cost = icp_result.cost;
 
-    // estimate velocities and accelerations from the new pose
+    // estimate velocities from the new pose
     const auto dt = to_seconds<Scalar>(current_lidar_time - lidar_state.time);
     const Sophus::SE3s pose_delta = lidar_state.pose.inverse() * optimized_pose;
     const Eigen::Vector6s local_velocity = pose_delta.log() / dt;
-    const Eigen::Vector3s local_linear_acceleration =
-        (local_velocity.head<3>() - pose_delta.so3().inverse() * lidar_state.linear_velocity) / dt;
 
     // update
     lidar_state.pose = optimized_pose;
     lidar_state.linear_velocity = local_velocity.head<3>();
     lidar_state.angular_velocity = local_velocity.tail<3>();
-    lidar_state.linear_acceleration = local_linear_acceleration;
   }
   // even if map is empty, time should still update
   lidar_state.time = current_lidar_time;
   // reset imu to last know lidar state
-  imu_state = lidar_state;
+  imu = {.rotation = lidar_state.pose.so3(), .time = lidar_state.time};
   // reset imu averages
   interval_stats.reset();
 
@@ -498,7 +482,7 @@ void LIO::restart() {
   config.initialization_phase = false;
   map.clear();
   lidar_state = {};
-  imu_state = {};
+  imu = {};
   interval_stats.reset();
   initialized_ = false;
 }

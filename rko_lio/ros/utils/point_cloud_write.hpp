@@ -25,15 +25,10 @@
 #include <rko_lio/core/util.hpp>
 
 #include <Eigen/Core>
+#include <memory>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <vector>
 
 namespace rko_lio::ros::utils {
 std::unique_ptr<sensor_msgs::msg::PointCloud2> eigen_to_point_cloud2(const core::Vector3sVector& points,
-                                                                     const std_msgs::msg::Header& header);
-
-// Throws core::InputError if intensities does not match points in size.
-std::unique_ptr<sensor_msgs::msg::PointCloud2> eigen_to_point_cloud2(const core::Vector3sVector& points,
-                                                                     const std::vector<float>& intensities,
                                                                      const std_msgs::msg::Header& header);
 } // namespace rko_lio::ros::utils

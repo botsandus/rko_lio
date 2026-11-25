@@ -23,29 +23,42 @@
  */
 
 #include "base_node.hpp"
+#include "rko_lio/core/error.hpp"
+#include "rko_lio/ros/utils/point_cloud_write.hpp"
+#include "rko_lio/ros/utils/ros_vectors.hpp"
 #include "rko_lio/ros/utils/spdlog_sink.hpp"
-#include "rko_lio/ros/utils/utils.hpp"
+#include "rko_lio/ros/utils/time.hpp"
+#include "rko_lio/ros/utils/transforms.hpp"
 #include <UTL/profiler.hpp>
 // other
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <iterator>
 #include <map>
 #include <optional>
+#include <rclcpp/utilities.hpp>
 #include <rclcpp/version.h>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
-
-namespace {
-using namespace std::literals;
-} // namespace
+#include <string>
+#include <string_view>
 
 namespace rko_lio::ros {
+namespace {
+using namespace std::literals;
 
-core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_msg) {
-  core::ImuControl imu_data;
-  imu_data.time = utils::to_ns(imu_msg.header.stamp);
-  imu_data.angular_velocity = utils::ros_xyz_to_eigen_vector(imu_msg.angular_velocity);
-  imu_data.acceleration = utils::ros_xyz_to_eigen_vector(imu_msg.linear_acceleration);
-  return imu_data;
-}
+// while no payload waits for them, the IMU buffer keeps this much before its newest sample
+constexpr core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
+
+// Merging assumes phase-locked lidars at 10 Hz: one merge payload's scans end within MAX_PHASE_SPREAD of each other,
+// one LIDAR_PERIOD after the previous payload.
+constexpr core::Nsec MAX_PHASE_SPREAD = 5ms;
+constexpr core::Nsec LIDAR_PERIOD = 100ms;
+constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
+// a scan more than this many payloads from the anchor is a time step (PTP), not a phase-locked lidar
+constexpr int MAX_PAYLOAD_JUMP = 10;
+} // namespace
 
 BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options) {
   node = rclcpp::Node::make_shared(node_name, options);
@@ -87,12 +100,6 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
     reset_count_publisher->publish(std_msgs::msg::UInt32());
   }
 
-  publish_lidar_acceleration = node->declare_parameter<bool>("publish_lidar_acceleration", publish_lidar_acceleration);
-  if (publish_lidar_acceleration) {
-    lidar_accel_publisher =
-        node->create_publisher<geometry_msgs::msg::AccelStamped>("rko_lio/lidar_acceleration", publisher_qos);
-  }
-
   publish_deskewed_scan = node->declare_parameter<bool>("publish_deskewed_scan", publish_deskewed_scan);
   if (publish_deskewed_scan) {
     deskewed_scan_topic = node->declare_parameter<std::string>("deskewed_scan_topic", deskewed_scan_topic);
@@ -113,14 +120,9 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   core::LIO::Config lio_config{};
   lio_config.deskew = node->declare_parameter<bool>("deskew", lio_config.deskew);
   lio_config.deskew_per_stamp = node->declare_parameter<bool>("deskew_per_stamp", lio_config.deskew_per_stamp);
-  lio_config.max_iterations = static_cast<size_t>(node->declare_parameter<int>("max_iterations", 50));
+  lio_config.max_iterations = static_cast<std::size_t>(node->declare_parameter<int>("max_iterations", 50));
   lio_config.voxel_size =
       static_cast<core::Scalar>(node->declare_parameter<double>("voxel_size", lio_config.voxel_size));
-  if (node->declare_parameter<int>("max_points_per_voxel", -1) != -1) {
-    throw std::invalid_argument(
-        "max_points_per_voxel was removed, it is now fixed at compile time so the map can store points inline. "
-        "Use voxel_size to control map density instead: smaller keeps more points overall, larger keeps fewer.");
-  }
   lio_config.max_range = static_cast<core::Scalar>(node->declare_parameter<double>("max_range", lio_config.max_range));
   lio_config.min_range = static_cast<core::Scalar>(node->declare_parameter<double>("min_range", lio_config.min_range));
   lio_config.convergence_criterion = static_cast<core::Scalar>(
@@ -150,60 +152,57 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   }
   lidar_time.relative = reference == "relative";
 
-  RCLCPP_INFO_STREAM(node->get_logger(),
-                     "Subscribed to IMU: "
-                         << imu_topic << " and LiDAR: "
-                         << (lidar_topics.empty() ? lidar_topic
-                                                  : "a merge of " + std::to_string(lidar_topics.size()) + " lidars")
-                         << ". Max number of threads: " << lio_config.max_num_threads << ". "
-                         << (publish_odom ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
-                                          : std::string("Not publishing odometry"))
-                         << (publish_odom_tf ? ", its tf" : ", no tf")
-                         << " and acceleration "
-                            "estimates to rko_lio/lidar_acceleration. Deskewing is "
-                         << (lio->config.deskew ? "enabled" : "disabled") << "."
-                         << (publish_deskewed_scan ? (" Publishing the deskewed scan to " + deskewed_scan_topic + ".")
-                                                   : ""));
+  RCLCPP_INFO_STREAM(
+      node->get_logger(),
+      "IMU: " << imu_topic << ", LiDAR: "
+              << (lidar_topics.empty() ? lidar_topic : "a merge of " + std::to_string(lidar_topics.size()) + " lidars")
+              << ". Max number of threads: " << lio_config.max_num_threads << ". "
+              << (publish_odom ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
+                               : std::string("Not publishing odometry"))
+              << (publish_odom_tf ? ", its tf" : ", no tf") << ". Deskewing is "
+              << (lio->config.deskew ? "enabled" : "disabled") << "."
+              << (publish_deskewed_scan ? (" Publishing the deskewed scan to " + deskewed_scan_topic + ".") : ""));
 
   reset_on_registration_error =
       node->declare_parameter<bool>("reset_on_registration_error", reset_on_registration_error);
   reset_service = node->create_service<std_srvs::srv::Trigger>(
       "~/reset", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>&,
                         const std::shared_ptr<std_srvs::srv::Trigger::Response>& response) {
-        atomic_reset_requested = true;
+        reset_requested = true;
         response->success = true;
         response->message = "The odometry resets before its next payload.";
       });
 
-  if (publish_local_map) { // last: a throw above must not leave this thread running, and it reads lio
-    map_publish_thread = std::jthread([this] { publish_map_loop(); });
+  max_lidar_buffer_size = static_cast<std::size_t>(
+      node->declare_parameter<int>("max_lidar_buffer_size", static_cast<int>(max_lidar_buffer_size)));
+  if (node->declare_parameter<bool>("publish_metrics", false)) {
+    metrics_publisher = node->create_publisher<std_msgs::msg::Float64MultiArray>("rko_lio/metrics", 100);
   }
+  for (const std::string& topic : lidar_topics) {
+    multi_lidar_inputs.push_back({.topic = topic});
+  }
+  // last: a throw above must not leave a thread running, and they read lio
+  if (publish_local_map) {
+    map_publish_thread = std::jthread([this](const std::stop_token& stop) { publish_map_loop(stop); });
+  }
+  registration_thread = std::jthread([this](const std::stop_token& stop) { registration_loop(stop); });
   RCLCPP_INFO(node->get_logger(), "RKO LIO Node is up!");
 }
 
-void BaseNode::require_single_lidar() const {
-  if (!lidar_topics.empty()) {
-    throw std::invalid_argument(
-        "lidar_topics (several lidars merged into one payload) is supported by the online node only.");
+std::optional<Sophus::SE3s> BaseNode::lookup_extrinsic(const std::string& frame) const {
+  if (frame.empty()) {
+    throw std::invalid_argument("A message header has no frame id: its extrinsic comes from tf.");
   }
+  std::optional<Sophus::SE3s> extrinsic = utils::get_transform(tf_buffer, frame, base_frame);
+  if (extrinsic) {
+    RCLCPP_INFO_STREAM(node->get_logger(),
+                       "Extrinsic from " << frame << " to " << base_frame << ": " << extrinsic->log().transpose());
+  }
+  return extrinsic;
 }
 
-bool BaseNode::extrinsic_from_tf(std::optional<Sophus::SE3s>& extrinsic, const std::string& frame) {
-  if (!extrinsic) {
-    if (frame.empty()) {
-      throw std::invalid_argument("A message header has no frame id: its extrinsic comes from tf.");
-    }
-    extrinsic = utils::get_transform(tf_buffer, frame, base_frame, 0s);
-    if (extrinsic) {
-      RCLCPP_INFO_STREAM(node->get_logger(),
-                         "Extrinsic from " << frame << " to " << base_frame << ": " << extrinsic->log().transpose());
-    }
-  }
-  return extrinsic.has_value();
-}
-
-LidarPayload BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
-                                         const Sophus::SE3s& lidar2base) const {
+LidarPayload BaseNode::lidar_msg_to_payload(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                                            const Sophus::SE3s& lidar2base) const {
   const auto arrival = std::chrono::steady_clock::now();
   const core::Nsec arrival_node_clock = utils::to_ns(node->now());
   UTL_PROFILER_SCOPE("rko_lio: convert message");
@@ -217,55 +216,26 @@ LidarPayload BaseNode::process_lidar_msg(const sensor_msgs::msg::PointCloud2::Co
   return payload;
 }
 
-std::vector<core::Vector3sVector> BaseNode::register_payload_locked(std::vector<core::Vector3sVector> clouds,
-                                                                    const std::span<const core::Timestamps> timestamps,
-                                                                    const std::span<const Sophus::SE3s> lidar2base) {
-  if (atomic_reset_requested.exchange(false)) {
-    RCLCPP_WARN(node->get_logger(), "Odometry reset requested through the reset service.");
-    reset_odometry(); // takes local_map_mutex itself
-  }
-  std::unique_lock lock(local_map_mutex, std::defer_lock);
-  if (publish_local_map) {
-    lock.lock(); // map publish thread may access map simultaneously
-  }
-  return lio->register_payload(std::move(clouds), timestamps, lidar2base);
-}
-
-void BaseNode::publish_lidar_outputs(const std::vector<core::Vector3sVector>& deskewed_clouds) const {
-  if (publish_lidar_acceleration) {
-    publish_lidar_accel(lio->lidar_state);
-  }
-  if (publish_deskewed_scan) {
-    std_msgs::msg::Header header;
-    header.frame_id = base_frame;
-    header.stamp = utils::to_ros_time(lio->lidar_state.time);
-    core::Vector3sVector points; // one message for all clouds
-    for (const core::Vector3sVector& cloud : deskewed_clouds) {
-      points.insert(points.end(), cloud.begin(), cloud.end());
-    }
-    frame_publisher->publish(utils::eigen_to_point_cloud2(points, header));
-  }
-}
-
-void BaseNode::publish_odometry(const core::State& state,
-                                const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr& publisher) const {
+void BaseNode::publish_odometry() const {
   if (!publish_odom) {
     return;
   }
+  const core::State& state = lio->lidar_state;
   nav_msgs::msg::Odometry odom_msg;
   odom_msg.header.stamp = utils::to_ros_time(state.time);
   odom_msg.header.frame_id = odom_frame;
   odom_msg.child_frame_id = base_frame;
   odom_msg.pose.pose = utils::sophus_to_pose(state.pose);
-  utils::eigen_vector_to_ros_xyz(state.linear_velocity, odom_msg.twist.twist.linear);
-  utils::eigen_vector_to_ros_xyz(state.angular_velocity, odom_msg.twist.twist.angular);
-  publisher->publish(odom_msg);
+  odom_msg.twist.twist.linear = utils::eigen_to_ros_vector3(state.linear_velocity);
+  odom_msg.twist.twist.angular = utils::eigen_to_ros_vector3(state.angular_velocity);
+  odom_publisher->publish(odom_msg);
 }
 
-void BaseNode::publish_tf(const core::State& state) const {
+void BaseNode::publish_tf() const {
   if (!publish_odom_tf) {
     return;
   }
+  const core::State& state = lio->lidar_state;
   geometry_msgs::msg::TransformStamped transform_msg;
   transform_msg.header.stamp = utils::to_ros_time(state.time);
   if (invert_odom_tf) {
@@ -280,18 +250,24 @@ void BaseNode::publish_tf(const core::State& state) const {
   tf_broadcaster->sendTransform(transform_msg);
 }
 
-void BaseNode::publish_lidar_accel(const core::State& state) const {
-  auto accel_msg = geometry_msgs::msg::AccelStamped();
-  accel_msg.header.stamp = utils::to_ros_time(state.time);
-  accel_msg.header.frame_id = base_frame;
-  utils::eigen_vector_to_ros_xyz(state.linear_acceleration, accel_msg.accel.linear);
-  lidar_accel_publisher->publish(accel_msg);
+void BaseNode::publish_deskewed_clouds(const std::vector<core::Vector3sVector>& deskewed_clouds) const {
+  if (!publish_deskewed_scan) {
+    return;
+  }
+  std_msgs::msg::Header header;
+  header.frame_id = base_frame;
+  header.stamp = utils::to_ros_time(lio->lidar_state.time);
+  core::Vector3sVector points; // one message for all clouds
+  for (const core::Vector3sVector& cloud : deskewed_clouds) {
+    points.insert(points.end(), cloud.begin(), cloud.end());
+  }
+  frame_publisher->publish(utils::eigen_to_point_cloud2(points, header));
 }
 
-void BaseNode::publish_map_loop() {
-  while (atomic_node_running) {
-    std::this_thread::sleep_for(publish_map_after);
-    std::unique_lock lock(local_map_mutex);
+void BaseNode::publish_map_loop(const std::stop_token& stop) {
+  std::condition_variable_any period; // nothing notifies it: each wait ends after publish_map_after, or on stop
+  std::unique_lock lock(local_map_mutex);
+  while (!period.wait_for(lock, stop, publish_map_after, [] { return false; }) && !stop.stop_requested()) {
     if (lio->map.empty()) {
       RCLCPP_WARN_ONCE(node->get_logger(), "Local map publish thread: Local map is empty.");
       continue;
@@ -303,18 +279,16 @@ void BaseNode::publish_map_loop() {
     map_header.stamp = utils::to_ros_time(map_time);
     map_header.frame_id = odom_frame;
     map_publisher->publish(utils::eigen_to_point_cloud2(map_points, map_header));
+    lock.lock();
   }
 }
 
-BaseNode::~BaseNode() { atomic_node_running = false; }
-
 void BaseNode::reset_odometry() {
   const bool forced_init_off = lio->config.initialization_phase;
-  std::unique_lock lock(local_map_mutex, std::defer_lock);
-  if (publish_local_map) {
-    lock.lock();
+  {
+    const std::scoped_lock lock(local_map_mutex);
+    lio->restart();
   }
-  lio->restart();
   ++reset_count;
   RCLCPP_WARN_STREAM(node->get_logger(), "Odometry reset count: " << reset_count);
   if (publish_odom) {
@@ -326,6 +300,287 @@ void BaseNode::reset_odometry() {
     RCLCPP_WARN(node->get_logger(),
                 "initialization_phase was enabled; it is off after reset because static start is not guaranteed.");
   }
+}
+
+void BaseNode::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg) {
+  if (!extrinsic_imu2base) {
+    extrinsic_imu2base = lookup_extrinsic(imu_msg->header.frame_id);
+  }
+  if (!extrinsic_imu2base) {
+    return;
+  }
+  {
+    const std::scoped_lock lock(buffer_mutex);
+    imu_buffer.push({
+        .time = utils::to_ns(imu_msg->header.stamp),
+        .acceleration = utils::ros_to_eigen_vector3(imu_msg->linear_acceleration),
+        .angular_velocity = utils::ros_to_eigen_vector3(imu_msg->angular_velocity),
+    });
+    while (lidar_buffer.empty() && imu_buffer.back().time - imu_buffer.front().time > MAX_IMU_BUFFER_SPAN) {
+      imu_buffer.pop();
+    }
+    can_register = !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
+  }
+  if (can_register) {
+    registration_wakeup.notify_one();
+  }
+}
+
+void BaseNode::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg) {
+  if (!extrinsic_lidar2base) {
+    extrinsic_lidar2base = lookup_extrinsic(lidar_msg->header.frame_id);
+  }
+  if (!extrinsic_lidar2base) {
+    return;
+  }
+  try {
+    add_to_lidar_buffer(lidar_msg_to_payload(lidar_msg, *extrinsic_lidar2base));
+  } catch (const core::InputError& ex) {
+    RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
+  }
+}
+
+void BaseNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg,
+                                    const std::size_t input) {
+  MultiLidarInput& in = multi_lidar_inputs[input];
+  if (!in.lidar2base) {
+    in.lidar2base = lookup_extrinsic(lidar_msg->header.frame_id);
+  }
+  if (!in.lidar2base) {
+    return;
+  }
+  try {
+    LidarPayload payload = lidar_msg_to_payload(lidar_msg, *in.lidar2base);
+    if (payload_anchor && std::chrono::abs(payload.end() - payload_anchor->end) > MAX_PAYLOAD_JUMP * LIDAR_PERIOD) {
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         "A scan from " << in.topic << " ends " << core::to_seconds(payload.end() - payload_anchor->end)
+                                        << " s from the merge anchor: re-anchoring the merge on it");
+      open_payloads.clear();
+      payload_anchor.reset();
+      last_merged_payload_index.reset();
+    }
+    if (!payload_anchor) {
+      payload_anchor = PayloadAnchor{.end = payload.end(), .index = 0};
+    }
+    const std::int64_t payload_index =
+        payload_anchor->index +
+        std::llround(core::to_seconds(payload.end() - payload_anchor->end) / core::to_seconds(LIDAR_PERIOD));
+    const bool merged = last_merged_payload_index && payload_index <= *last_merged_payload_index;
+    const auto drop = [&](const std::string_view reason) {
+      RCLCPP_WARN_STREAM(node->get_logger(), "Dropping a LiDAR scan of " << payload.point_count() << " points from "
+                                                                         << in.topic << ": " << reason);
+      publish_metrics(payload, std::chrono::steady_clock::now(), PayloadStatus::skipped,
+                      {.input_points = payload.point_count()});
+    };
+    if (in.fragment_check.is_fragment(core::to_seconds<core::Scalar>(payload.end() - payload.start()),
+                                      static_cast<core::Scalar>(payload.point_count()))) {
+      drop("a fragment");
+      if (!merged) {
+        open_payloads.try_emplace(payload_index, multi_lidar_inputs.size()).first->second[input].dropped = true;
+        merge_ready_payloads();
+      }
+      return;
+    }
+    if (merged) {
+      drop("its payload was merged without it");
+      return;
+    }
+    std::vector<PayloadSlot>& slots = open_payloads.try_emplace(payload_index, multi_lidar_inputs.size()).first->second;
+    if (slots[input].payload) {
+      drop("a second one in one payload");
+      return;
+    }
+    if (payload_index > payload_anchor->index) {
+      payload_anchor = PayloadAnchor{.end = payload.end(), .index = payload_index};
+    }
+    slots[input].payload = std::move(payload);
+    merge_ready_payloads();
+  } catch (const core::InputError& ex) {
+    RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
+  }
+}
+
+void BaseNode::merge_ready_payloads() {
+  // oldest first: complete (every lidar in or dropped), a newer one complete, or one two payloads newer open
+  const auto complete = [](const auto& open_payload) {
+    return std::ranges::all_of(open_payload.second,
+                               [](const PayloadSlot& slot) { return slot.payload || slot.dropped; });
+  };
+  while (!open_payloads.empty()) {
+    const auto oldest = open_payloads.begin();
+    const bool newer_complete = std::any_of(std::next(oldest), open_payloads.end(), complete);
+    const bool stale = open_payloads.rbegin()->first - oldest->first >= 2;
+    if (!complete(*oldest) && !newer_complete && !stale) {
+      return;
+    }
+    last_merged_payload_index = oldest->first;
+    std::vector<PayloadSlot> slots = std::move(oldest->second);
+    open_payloads.erase(oldest);
+    UTL_PROFILER_SCOPE("rko_lio: merge payload");
+    LidarPayload merged;
+    std::string missing_topics;
+    for (std::size_t input = 0; input < slots.size(); ++input) {
+      PayloadSlot& slot = slots[input];
+      if (!slot.payload) {
+        if (!slot.dropped) {
+          missing_topics += " " + multi_lidar_inputs[input].topic;
+        }
+        continue;
+      }
+      LidarPayload& payload = *slot.payload;
+      merged.timestamps.push_back(std::move(payload.timestamps.front()));
+      merged.clouds.push_back(std::move(payload.clouds.front()));
+      merged.lidar2base.push_back(payload.lidar2base.front());
+      if (payload.ready > merged.ready) {
+        merged.arrival = payload.arrival;
+        merged.ready = payload.ready;
+      }
+    }
+    if (merged.clouds.empty()) {
+      continue;
+    }
+    // upstream includes the wait for the last lidar
+    merged.upstream = utils::to_ns(node->now()) - merged.end();
+    const core::Nsec first_end = std::ranges::min_element(merged.timestamps, {}, &core::Timestamps::max)->max;
+    const core::Nsec last_end = merged.end();
+    if (last_end - first_end > MAX_PHASE_SPREAD) {
+      const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
+      const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_PHASE_SPREAD).count();
+      RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping unsynchronised lidar scans: their ends differ by "
+                                                  << spread_ms << " ms, more than the " << max_spread_ms
+                                                  << " ms of phase-locked lidars");
+      publish_metrics(merged, std::chrono::steady_clock::now(), PayloadStatus::unsynced,
+                      {.input_points = merged.point_count()});
+      if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
+        RCLCPP_FATAL(
+            node->get_logger(),
+            "%d merge payloads in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
+            "Exiting.",
+            consecutive_unsynced);
+        throw std::runtime_error("lidar_topics: the lidars are not phase-locked");
+      }
+      continue;
+    }
+    consecutive_unsynced = 0;
+    if (!missing_topics.empty()) {
+      RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan in this payload from" << missing_topics);
+    }
+    add_to_lidar_buffer(std::move(merged));
+  }
+}
+
+void BaseNode::add_to_lidar_buffer(LidarPayload payload) {
+  std::optional<LidarPayload> dropped;
+  {
+    const std::scoped_lock lock(buffer_mutex);
+    if (lidar_buffer.size() >= max_lidar_buffer_size) {
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         "Registration lidar buffer limit reached. Dropping oldest buffered payload.");
+      dropped = std::move(lidar_buffer.front());
+      lidar_buffer.pop();
+    }
+    lidar_buffer.push(std::move(payload));
+    can_register = !imu_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
+  }
+  if (can_register) {
+    registration_wakeup.notify_one();
+  }
+  if (dropped) {
+    publish_metrics(*dropped, std::chrono::steady_clock::now(), PayloadStatus::buffer_full,
+                    {.input_points = dropped->point_count()});
+  }
+}
+
+void BaseNode::registration_loop(const std::stop_token& stop) {
+  while (rclcpp::ok()) {
+    std::unique_lock buffer_lock(buffer_mutex);
+    if (!registration_wakeup.wait(buffer_lock, stop,
+                                  [this, &stop] { return can_register.load() && !stop.stop_requested(); })) {
+      break; // stop requested
+    }
+    UTL_PROFILER_SCOPE("rko_lio: ROS registration loop");
+    LidarPayload payload = std::move(lidar_buffer.front());
+    lidar_buffer.pop();
+    const auto registration_start = std::chrono::steady_clock::now();
+    registration_busy = true;
+    const core::Nsec end_stamp = payload.end();
+    for (; !imu_buffer.empty() && imu_buffer.front().time < end_stamp; imu_buffer.pop()) {
+      const core::ImuControl& imu_data = imu_buffer.front();
+      lio->add_imu_measurement(extrinsic_imu2base.value(), imu_data);
+    }
+    // check if there are more messages buffered already
+    can_register = !imu_buffer.empty() && !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
+    buffer_lock.unlock(); // we dont touch the buffers anymore
+
+    try {
+      if (reset_requested.exchange(false)) {
+        RCLCPP_WARN(node->get_logger(), "Odometry reset requested through the reset service.");
+        reset_odometry(); // takes local_map_mutex itself
+      }
+      const std::vector<core::Vector3sVector> deskewed_clouds = std::invoke([&] {
+        const std::scoped_lock lock(local_map_mutex); // the map publish thread reads the map
+        return lio->register_payload(std::move(payload.clouds), payload.timestamps, payload.lidar2base);
+      });
+      if (deskewed_clouds.empty()) {
+        publish_metrics(payload, registration_start, PayloadStatus::skipped, lio->payload_stats);
+      } else {
+        publish_tf();
+        publish_odometry();
+        publish_metrics(payload, registration_start, PayloadStatus::ok, lio->payload_stats);
+        publish_deskewed_clouds(deskewed_clouds);
+      }
+    } catch (const core::InputError& ex) {
+      RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping payload: " << ex.what());
+      publish_metrics(payload, registration_start, PayloadStatus::input_error, lio->payload_stats);
+    } catch (const core::RegistrationError& ex) {
+      RCLCPP_ERROR_STREAM(node->get_logger(), "Registration failed (" << ex.what() << ").");
+      publish_metrics(payload, registration_start, PayloadStatus::registration_error, lio->payload_stats);
+      if (reset_on_registration_error) {
+        reset_odometry();
+      } else {
+        RCLCPP_WARN(node->get_logger(), "Set reset_on_registration_error:=true to reset odometry and continue.");
+        throw;
+      }
+    }
+    registration_busy = false;
+  }
+  map_publish_thread.request_stop();
+}
+
+void BaseNode::publish_metrics(const LidarPayload& payload,
+                               const std::chrono::steady_clock::time_point registration_start,
+                               const PayloadStatus status,
+                               const core::PayloadStats& stats) const {
+  if (!metrics_publisher) {
+    return;
+  }
+  const std::int64_t end_ns = payload.end().count();
+  const std::int64_t duration_ns = (payload.end() - payload.start()).count();
+  const std::int64_t upstream_ns = payload.upstream.count();
+  const std::int64_t convert_ns = core::Nsec(payload.ready - payload.arrival).count();
+  const std::int64_t wait_ns = core::Nsec(registration_start - payload.ready).count();
+  const std::int64_t registration_ns = core::Nsec(std::chrono::steady_clock::now() - registration_start).count();
+  // rko_lio/metrics, in this order: end_ns, duration_ns, upstream_ns, convert_ns, wait_ns, registration_ns, status,
+  // input_points, keypoints, imu_samples, icp_iterations, correspondences, icp_cost. Times in ns; wait is for an IMU
+  // sample past the payload end, or the previous payload; registration ends with the odometry published. end_ns as a
+  // double is rounded to 256 ns
+  std_msgs::msg::Float64MultiArray msg;
+  msg.data = {
+      static_cast<double>(end_ns),
+      static_cast<double>(duration_ns),
+      static_cast<double>(upstream_ns),
+      static_cast<double>(convert_ns),
+      static_cast<double>(wait_ns),
+      static_cast<double>(registration_ns),
+      static_cast<double>(status),
+      static_cast<double>(stats.input_points),
+      static_cast<double>(stats.keypoints),
+      static_cast<double>(stats.imu_samples),
+      static_cast<double>(stats.icp_iterations),
+      static_cast<double>(stats.correspondences),
+      static_cast<double>(stats.icp_cost),
+  };
+  metrics_publisher->publish(msg);
 }
 
 } // namespace rko_lio::ros

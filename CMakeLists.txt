@@ -69,13 +69,6 @@ else()
     EXECUTABLE
     online_node)
 
-  rclcpp_components_register_node(
-    online_imu_rate_node_component
-    PLUGIN
-    "rko_lio::ros::OnlineImuRateNode"
-    EXECUTABLE
-    online_imu_rate_node)
-
   if(NOT RKO_LIO_FETCH_CONTENT_DEPS AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.23")
     install(
       TARGETS rko_lio.core rko_lio.ros rko_lio.ros.utils
@@ -104,7 +97,7 @@ else()
   endif()
 
   install(
-    TARGETS online_node_component online_imu_rate_node_component offline_node
+    TARGETS online_node_component offline_node
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION lib/${PROJECT_NAME})
 
