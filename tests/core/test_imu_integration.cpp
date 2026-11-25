@@ -2,10 +2,14 @@
 #include "rko_lio/core/lio.hpp"
 #include "rko_lio/core/util.hpp"
 #include "synthetic_clouds.hpp"
+#include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 using Catch::Matchers::WithinAbs;
 using rko_lio::core::GRAVITY_MAG;
@@ -193,7 +197,7 @@ TEST_CASE("Extrinsic overload: pure-rotation extrinsic transforms omega", "[imu_
   const Eigen::Vector3s omega_imu(0.0, 0.0, 1.0);
   const Eigen::Vector3s expected_base = R * omega_imu;
 
-  // First extrinsic call is dropped (primes _last_real_imu_time); feed N+1 to get N integrated.
+  // The first extrinsic call is not integrated, so N+1 calls integrate N.
   constexpr int N = 20;
   for (int i = 0; i < N + 1; ++i) {
     ImuControl m;
@@ -208,7 +212,89 @@ TEST_CASE("Extrinsic overload: pure-rotation extrinsic transforms omega", "[imu_
   REQUIRE(approx_equal(avg_gyro, expected_base, TOL));
 }
 
-// TODO: lever-arm centripetal correction (omega x (omega x r)) for translational extrinsic.
+TEST_CASE("Extrinsic overload: a rotated, offset IMU's lever arm is compensated", "[imu_integration]") {
+  LIO lio(default_config());
+  lio.lidar_state.time = ns_from_seconds(1.0);
+  lio.imu.time = lio.lidar_state.time;
+
+  // An IMU at r, rotated by R, on a base that turns at omega_k and accelerates at a_base. It measures R^T omega_k and
+  // R^T (a_base + alpha_k x r + omega_k x (omega_k x r)), where alpha_k = (omega_k - omega_(k-1)) / dt. alpha differs
+  // between the second and third sample, so the third sample compensates to a_base only if the LIO took the second
+  // sample as its previous one.
+  const Sophus::SO3s R = Sophus::SO3s::rotX(0.3) * Sophus::SO3s::rotZ(1.2);
+  const Eigen::Vector3s r(0.4, -0.7, 1.5);
+  const Sophus::SE3s extrinsic_imu2base(R, r);
+  const Eigen::Vector3s a_base(0.3, -0.2, 0.1);
+  constexpr double dt = 0.01;
+  const std::array<Eigen::Vector3s, 3> omega{
+      Eigen::Vector3s(0.1, -0.05, 0.5),
+      Eigen::Vector3s(0.1, -0.05, 0.52),
+      Eigen::Vector3s(0.12, -0.05, 0.5),
+  };
+
+  for (std::size_t k = 0; k < omega.size(); ++k) {
+    const Eigen::Vector3s alpha =
+        k == 0 ? Eigen::Vector3s::Zero() : Eigen::Vector3s((omega.at(k) - omega.at(k - 1)) / dt);
+    ImuControl m;
+    m.time = ns_from_seconds(1.0 + (dt * static_cast<double>(k + 1)));
+    m.angular_velocity = R.inverse() * omega.at(k);
+    m.acceleration = R.inverse() * (a_base + alpha.cross(r) + omega.at(k).cross(omega.at(k).cross(r)));
+    lio.add_imu_measurement(extrinsic_imu2base, m);
+  }
+
+  // The first sample is not integrated, so two samples are. The second sample's alpha uses the first sample's angular
+  // velocity, not zero.
+  REQUIRE(lio.interval_stats.imu_count == 2);
+  REQUIRE(approx_equal(lio.interval_stats.angular_velocity_sum, Eigen::Vector3s(omega[1] + omega[2]), TOL));
+  REQUIRE(approx_equal(lio.interval_stats.imu_acceleration_sum, Eigen::Vector3s(2 * a_base), TOL));
+}
+
+TEST_CASE("Extrinsic overload: interleaved IMUs each keep their own history", "[imu_integration]") {
+  LIO lio(default_config());
+  lio.lidar_state.time = ns_from_seconds(1.0);
+  lio.imu.time = lio.lidar_state.time;
+
+  // Two IMUs with identity rotation sit at r_i on one base accelerating at a_base. IMU i has omega_i(t) = omega0_i +
+  // alpha_i t, so it measures a_base + alpha_i x r_i + omega_i x (omega_i x r_i). The compensated acceleration equals
+  // a_base only if alpha_i comes from IMU i's own previous sample. The sample periods differ, so the samples
+  // interleave.
+  struct Imu {
+    Eigen::Vector3s r;
+    Eigen::Vector3s omega0;
+    Eigen::Vector3s alpha;
+    double period;
+  };
+  const std::array<Imu, 2> imus{
+      Imu{.r = {1.0, 0.0, 0.0}, .omega0 = {0.0, 0.0, 1.0}, .alpha = {0.0, 0.0, 2.0}, .period = 0.010},
+      Imu{.r = {0.0, 1.0, 0.0}, .omega0 = {0.1, 0.0, -0.8}, .alpha = {0.5, 0.0, 3.0}, .period = 0.007},
+  };
+  const Eigen::Vector3s a_base(0.3, -0.2, 0.1);
+
+  struct Sample {
+    double time;
+    std::size_t imu;
+  };
+  std::vector<Sample> samples;
+  for (std::size_t imu = 0; imu < 2; ++imu) {
+    for (int k = 1; k <= 5; ++k) {
+      samples.push_back({.time = 1.0 + (imus.at(imu).period * k), .imu = imu});
+    }
+  }
+  std::ranges::sort(samples, {}, &Sample::time);
+  for (const Sample& sample : samples) {
+    const Imu& imu = imus.at(sample.imu);
+    const Eigen::Vector3s omega = imu.omega0 + (imu.alpha * (sample.time - 1.0));
+    ImuControl m;
+    m.time = ns_from_seconds(sample.time);
+    m.angular_velocity = omega;
+    m.acceleration = a_base + imu.alpha.cross(imu.r) + omega.cross(omega.cross(imu.r));
+    lio.add_imu_measurement(Sophus::SE3s(Sophus::SO3s(), imu.r), m, sample.imu);
+  }
+
+  // Each IMU's first sample is not integrated, leaving 2 x 4 = 8 samples.
+  REQUIRE(lio.interval_stats.imu_count == 8);
+  REQUIRE(approx_equal(lio.interval_stats.imu_acceleration_sum, Eigen::Vector3s(8 * a_base), TOL));
+}
 
 TEST_CASE("The first payload anchors the IMU integration at its end", "[imu_integration]") {
   LIO lio((LIO::Config{}));
