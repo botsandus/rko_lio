@@ -29,12 +29,15 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -80,6 +83,29 @@ enum class PayloadStatus : std::uint8_t {
   unsynced,           // merged scans whose ends differ by more than MAX_PHASE_SPREAD
 };
 
+// One per IMU topic (imu_topic, or each entry of imu_topics). imu2base is written once, by that IMU's callback, before
+// its first sample is buffered. All other fields are guarded by buffer_mutex.
+struct ImuInput {
+  std::string topic;
+  std::optional<Sophus::SE3s> imu2base; // looked up from tf once, on the first sample
+  std::deque<core::ImuControl> buffer;
+  std::optional<core::Nsec> newest_time;
+  bool stale = false; // no sample yet, or newest_time more than MAX_IMU_LAG older than the newest IMU sample
+  std::optional<core::Nsec> stale_from; // newest_time when it went stale
+  // Reset every LATE_IMU_LOG_PERIOD. used_samples were fed to the LIO, late_samples were dropped as older than
+  // fed_until.
+  std::size_t used_samples = 0;
+  std::size_t late_samples = 0;
+};
+
+// Whether a payload ending at end can register. Some IMU must have a sample past end. In addition, either every IMU
+// that is not stale has a sample past end, or min_samples is set and the buffers hold at least that many samples
+// stamped in [fed_until, end). inputs must not be empty.
+bool imus_cover(const std::span<const ImuInput> inputs,
+                const core::Nsec fed_until,
+                const core::Nsec end,
+                const std::optional<std::size_t> min_samples);
+
 class BaseNode {
 public:
   // merge state: touched only by the lidar callbacks, which never run at once (one mutually exclusive callback group)
@@ -98,7 +124,6 @@ public:
   };
 
   // from tf on the first message, its header's frame to the base frame
-  std::optional<Sophus::SE3s> extrinsic_imu2base;
   std::optional<Sophus::SE3s> extrinsic_lidar2base;
 
   std::unique_ptr<core::LIO> lio;
@@ -115,7 +140,6 @@ public:
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr reset_count_publisher;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr metrics_publisher;
 
-  std::string imu_topic;
   std::string lidar_topic;
   std::vector<std::string> lidar_topics; // set instead of lidar_topic: these lidars are merged into one payload
   std::string base_frame;
@@ -140,9 +164,15 @@ public:
 
   std::mutex buffer_mutex;
   std::condition_variable_any registration_wakeup;
-  std::atomic<bool> can_register = false; // the front payload has an IMU sample past its end
+  // Set online: a payload can register on this many samples before every IMU is past its end. Unset offline: a payload
+  // waits for every IMU that is not stale, so a run on one bag gives the same odometry every time.
+  const std::optional<std::size_t> min_imu_samples;
+  std::atomic<bool> can_register = false; // imus_cover() holds for the oldest buffered payload
   std::atomic<bool> registration_busy = false;
-  std::queue<core::ImuControl> imu_buffer;
+  std::vector<ImuInput> imu_inputs;
+  // End of the last payload whose IMU samples were fed to the LIO. A sample stamped before it is late, and is dropped
+  // and counted.
+  core::Nsec fed_until{0};
   std::queue<LidarPayload> lidar_buffer;
   std::size_t max_lidar_buffer_size = 10;
 
@@ -151,12 +181,13 @@ public:
   std::optional<PayloadAnchor> payload_anchor;
   std::optional<std::int64_t> last_merged_payload_index;
   int consecutive_unsynced = 0;
+  std::chrono::steady_clock::time_point late_imu_samples_logged; // registration thread only
 
   // last: joined (each stopped by its stop token) before the members they use are destroyed
   std::jthread map_publish_thread;
   std::jthread registration_thread;
 
-  BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options);
+  BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options, const bool wait_for_every_imu);
   BaseNode(const BaseNode&) = delete;
   BaseNode(BaseNode&&) = delete;
   BaseNode& operator=(const BaseNode&) = delete;
@@ -177,7 +208,13 @@ public:
 
   void reset_odometry();
 
-  void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg);
+  void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg, const std::size_t input);
+  // Call with buffer_mutex held. Updates each IMU's stale flag, logs when an IMU becomes stale or recovers, and sets
+  // can_register.
+  void update_can_register();
+  // Call with buffer_mutex held. Feeds the LIO every buffered sample stamped before the payload end, in stamp order
+  // across IMUs. Samples stamped before fed_until are dropped and counted as late.
+  void feed_imu_before(const core::Nsec end);
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();

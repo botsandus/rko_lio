@@ -24,22 +24,28 @@
 
 #include "base_node.hpp"
 #include "rko_lio/ros/utils/point_cloud_read.hpp"
+#include <cstddef>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <vector>
 
 namespace rko_lio::ros {
 namespace {
 class OnlineNode : public BaseNode {
 public:
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
+  std::vector<rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr> imu_subs;
   rclcpp::SubscriptionBase::SharedPtr lidar_sub;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> multi_lidar_subs;
 
-  explicit OnlineNode(const rclcpp::NodeOptions& options) : BaseNode("rko_lio_online_node", options) {
+  explicit OnlineNode(const rclcpp::NodeOptions& options)
+      : BaseNode("rko_lio_online_node", options, /*wait_for_every_imu=*/false) {
     const auto qos_imu = rclcpp::SensorDataQoS().keep_last(100);
     const auto qos_lidar = rclcpp::SensorDataQoS().keep_last(10);
 
-    imu_sub = node->create_subscription<sensor_msgs::msg::Imu>(
-        imu_topic, qos_imu, [this](const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg) { imu_callback(imu_msg); });
+    for (std::size_t input = 0; input < imu_inputs.size(); ++input) {
+      imu_subs.push_back(node->create_subscription<sensor_msgs::msg::Imu>(
+          imu_inputs[input].topic, qos_imu,
+          [this, input](const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg) { imu_callback(imu_msg, input); }));
+    }
 
     if (lidar_topics.empty()) {
       lidar_sub = utils::create_lidar_subscription(

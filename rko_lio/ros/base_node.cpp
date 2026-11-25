@@ -33,12 +33,14 @@
 // other
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <functional>
 #include <iterator>
 #include <map>
 #include <optional>
 #include <rclcpp/utilities.hpp>
 #include <rclcpp/version.h>
+#include <set>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
@@ -51,6 +53,21 @@ using namespace std::literals;
 // while no payload waits for them, the IMU buffer keeps this much before its newest sample
 constexpr core::Nsec MAX_IMU_BUFFER_SPAN = 10s;
 
+// An IMU is stale when its newest sample is more than this older than the newest sample of any IMU. Payloads do not
+// wait for a stale IMU.
+constexpr core::Nsec MAX_IMU_LAG = 250ms;
+// Online, a payload can register before every IMU that is not stale has a sample past its end, once some IMU has one
+// and at least this many samples, over all IMUs, are stamped between the previous payload's end and this payload's end.
+constexpr std::size_t MIN_IMU_SAMPLES = 10;
+// Every LATE_IMU_LOG_PERIOD, warn about each IMU for which more than MAX_LATE_IMU_FRACTION of its samples in that
+// period were dropped as late.
+constexpr std::chrono::seconds LATE_IMU_LOG_PERIOD = 60s;
+constexpr double MAX_LATE_IMU_FRACTION = 0.1;
+
+bool is_stale(const ImuInput& in, const core::Nsec newest_time) {
+  return !in.newest_time || *in.newest_time < newest_time - MAX_IMU_LAG;
+}
+
 // Merging assumes phase-locked lidars at 10 Hz: one merge payload's scans end within MAX_PHASE_SPREAD of each other,
 // one LIDAR_PERIOD after the previous payload.
 constexpr core::Nsec MAX_PHASE_SPREAD = 5ms;
@@ -60,13 +77,26 @@ constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
 constexpr int MAX_PAYLOAD_JUMP = 10;
 } // namespace
 
-BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options) {
+BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options, const bool wait_for_every_imu)
+    : min_imu_samples(wait_for_every_imu ? std::nullopt : std::optional<std::size_t>(MIN_IMU_SAMPLES)) {
   node = rclcpp::Node::make_shared(node_name, options);
   auto logger = std::make_shared<spdlog::logger>("rko_lio", std::make_shared<utils::RclcppSink>(node->get_logger()));
   logger->set_level(spdlog::level::trace);
   spdlog::set_default_logger(std::move(logger));
 
-  imu_topic = node->declare_parameter<std::string>("imu_topic"); // required
+  const auto imu_topic = node->declare_parameter<std::string>("imu_topic", "");
+  // set instead of imu_topic to feed the LIO from every listed IMU
+  const auto imu_topics = node->declare_parameter<std::vector<std::string>>("imu_topics", std::vector<std::string>{});
+  if (imu_topic.empty() == imu_topics.empty()) {
+    throw std::invalid_argument("Set exactly one of imu_topic and imu_topics (several IMUs, all used); imu_topic is '" +
+                                imu_topic + "' and imu_topics has " + std::to_string(imu_topics.size()) + " entries.");
+  }
+  if (std::set<std::string>(imu_topics.begin(), imu_topics.end()).size() != imu_topics.size()) {
+    throw std::invalid_argument("imu_topics lists an IMU more than once; list each IMU once.");
+  }
+  for (const std::string& topic : imu_topics.empty() ? std::vector<std::string>{imu_topic} : imu_topics) {
+    imu_inputs.push_back({.topic = topic});
+  }
   lidar_topic = node->declare_parameter<std::string>("lidar_topic", lidar_topic);
   lidar_topics = node->declare_parameter<std::vector<std::string>>("lidar_topics", lidar_topics);
   if (lidar_topic.empty() == lidar_topics.empty()) {
@@ -152,9 +182,13 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   }
   lidar_time.relative = reference == "relative";
 
+  std::string imus;
+  for (const ImuInput& in : imu_inputs) {
+    imus += (imus.empty() ? "" : ", ") + in.topic;
+  }
   RCLCPP_INFO_STREAM(
       node->get_logger(),
-      "IMU: " << imu_topic << ", LiDAR: "
+      "IMU: " << imus << ", LiDAR: "
               << (lidar_topics.empty() ? lidar_topic : "a merge of " + std::to_string(lidar_topics.size()) + " lidars")
               << ". Max number of threads: " << lio_config.max_num_threads << ". "
               << (publish_odom ? "Publishing odometry to " + odom_topic + " ( " + odom_frame + " )"
@@ -302,24 +336,26 @@ void BaseNode::reset_odometry() {
   }
 }
 
-void BaseNode::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg) {
-  if (!extrinsic_imu2base) {
-    extrinsic_imu2base = lookup_extrinsic(imu_msg->header.frame_id);
+void BaseNode::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg, const std::size_t input) {
+  ImuInput& in = imu_inputs[input];
+  if (!in.imu2base) {
+    in.imu2base = lookup_extrinsic(imu_msg->header.frame_id);
   }
-  if (!extrinsic_imu2base) {
+  if (!in.imu2base) {
     return;
   }
   {
     const std::scoped_lock lock(buffer_mutex);
-    imu_buffer.push({
+    in.buffer.push_back({
         .time = utils::to_ns(imu_msg->header.stamp),
         .acceleration = utils::ros_to_eigen_vector3(imu_msg->linear_acceleration),
         .angular_velocity = utils::ros_to_eigen_vector3(imu_msg->angular_velocity),
     });
-    while (lidar_buffer.empty() && imu_buffer.back().time - imu_buffer.front().time > MAX_IMU_BUFFER_SPAN) {
-      imu_buffer.pop();
+    in.newest_time = std::max(in.newest_time.value_or(in.buffer.back().time), in.buffer.back().time);
+    while (lidar_buffer.empty() && in.buffer.back().time - in.buffer.front().time > MAX_IMU_BUFFER_SPAN) {
+      in.buffer.pop_front();
     }
-    can_register = !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
+    update_can_register();
   }
   if (can_register) {
     registration_wakeup.notify_one();
@@ -469,6 +505,106 @@ void BaseNode::merge_ready_payloads() {
   }
 }
 
+bool imus_cover(const std::span<const ImuInput> inputs,
+                const core::Nsec fed_until,
+                const core::Nsec end,
+                const std::optional<std::size_t> min_samples) {
+  const std::optional<core::Nsec> newest_time =
+      std::ranges::max_element(inputs, {}, &ImuInput::newest_time)->newest_time;
+  if (!newest_time || *newest_time <= end) {
+    return false;
+  }
+  if (std::ranges::all_of(
+          inputs, [&](const ImuInput& in) { return is_stale(in, *newest_time) || in.newest_time.value() > end; })) {
+    return true;
+  }
+  if (!min_samples) {
+    return false;
+  }
+  std::size_t samples_before_end = 0;
+  for (const ImuInput& in : inputs) {
+    samples_before_end += static_cast<std::size_t>(std::ranges::count_if(
+        in.buffer, [&](const core::ImuControl& imu) { return fed_until <= imu.time && imu.time < end; }));
+  }
+  return samples_before_end >= *min_samples;
+}
+
+void BaseNode::update_can_register() {
+  if (lidar_buffer.empty()) {
+    can_register = false;
+    return;
+  }
+  const std::optional<core::Nsec> newest_time =
+      std::ranges::max_element(imu_inputs, {}, &ImuInput::newest_time)->newest_time;
+  for (ImuInput& in : imu_inputs) {
+    const bool stale = newest_time && is_stale(in, *newest_time);
+    if (stale && !in.stale) {
+      const std::string why =
+          in.newest_time
+              ? std::format("its newest sample, at {:.3f} s, is more than {} s before the newest IMU sample at "
+                            "{:.3f} s",
+                            core::to_seconds(*in.newest_time), core::to_seconds(MAX_IMU_LAG),
+                            core::to_seconds(*newest_time))
+              : std::format("it has no sample yet, and the newest IMU sample is at {:.3f} s",
+                            core::to_seconds(*newest_time));
+      RCLCPP_WARN_STREAM(node->get_logger(),
+                         std::format("IMU {} is stale: {}. Payloads no longer wait for it.", in.topic, why));
+      in.stale_from = in.newest_time;
+    } else if (!stale && in.stale) {
+      const std::string gap = in.stale_from ? std::format("{:.3f} s after its previous one",
+                                                          core::to_seconds(in.newest_time.value() - *in.stale_from))
+                                            : std::string("its first");
+      RCLCPP_INFO_STREAM(node->get_logger(),
+                         std::format("IMU {} is back with a sample at {:.3f} s, {}. Payloads wait for it again.",
+                                     in.topic, core::to_seconds(in.newest_time.value()), gap));
+    }
+    in.stale = stale;
+  }
+  can_register = imus_cover(imu_inputs, fed_until, lidar_buffer.front().end(), min_imu_samples);
+}
+
+void BaseNode::feed_imu_before(const core::Nsec end) {
+  struct Sample {
+    core::ImuControl imu;
+    std::size_t input;
+  };
+  std::vector<Sample> due;
+  for (std::size_t input = 0; input < imu_inputs.size(); ++input) {
+    for (std::deque<core::ImuControl>& buffer = imu_inputs[input].buffer; !buffer.empty() && buffer.front().time < end;
+         buffer.pop_front()) {
+      due.push_back({.imu = buffer.front(), .input = input});
+    }
+  }
+  std::ranges::stable_sort(due, {}, [](const Sample& sample) { return sample.imu.time; });
+  for (const Sample& sample : due) {
+    ImuInput& in = imu_inputs[sample.input];
+    if (sample.imu.time < fed_until) {
+      ++in.late_samples;
+      continue;
+    }
+    ++in.used_samples;
+    lio->add_imu_measurement(in.imu2base.value(), sample.imu, sample.input);
+  }
+  fed_until = end;
+
+  const auto now = std::chrono::steady_clock::now();
+  if (now - late_imu_samples_logged < LATE_IMU_LOG_PERIOD) {
+    return;
+  }
+  for (ImuInput& in : imu_inputs) {
+    const std::size_t samples = in.late_samples + in.used_samples;
+    if (samples > 0 && static_cast<double>(in.late_samples) > MAX_LATE_IMU_FRACTION * static_cast<double>(samples)) {
+      RCLCPP_WARN_STREAM(
+          node->get_logger(),
+          std::format("IMU {}: {} of {} samples in the last {} s arrived too late for their payload and were dropped",
+                      in.topic, in.late_samples, samples, LATE_IMU_LOG_PERIOD.count()));
+    }
+    in.late_samples = 0;
+    in.used_samples = 0;
+  }
+  late_imu_samples_logged = now;
+}
+
 void BaseNode::add_to_lidar_buffer(LidarPayload payload) {
   std::optional<LidarPayload> dropped;
   {
@@ -480,7 +616,7 @@ void BaseNode::add_to_lidar_buffer(LidarPayload payload) {
       lidar_buffer.pop();
     }
     lidar_buffer.push(std::move(payload));
-    can_register = !imu_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
+    update_can_register();
   }
   if (can_register) {
     registration_wakeup.notify_one();
@@ -504,12 +640,9 @@ void BaseNode::registration_loop(const std::stop_token& stop) {
     const auto registration_start = std::chrono::steady_clock::now();
     registration_busy = true;
     const core::Nsec end_stamp = payload.end();
-    for (; !imu_buffer.empty() && imu_buffer.front().time < end_stamp; imu_buffer.pop()) {
-      const core::ImuControl& imu_data = imu_buffer.front();
-      lio->add_imu_measurement(extrinsic_imu2base.value(), imu_data);
-    }
+    feed_imu_before(end_stamp);
     // check if there are more messages buffered already
-    can_register = !imu_buffer.empty() && !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().end();
+    update_can_register();
     buffer_lock.unlock(); // we dont touch the buffers anymore
 
     try {

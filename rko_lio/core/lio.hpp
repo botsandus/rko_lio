@@ -33,6 +33,8 @@
 
 #include <tbb/task_arena.h>
 
+#include <cstddef>
+#include <map>
 #include <span>
 
 /** Core namespace containing LIO data structures and state definitions. */
@@ -121,8 +123,12 @@ public:
    * to the base frame using the given extrinsic calibration.
    * @param extrinsic_imu2base Extrinsic transform from IMU to base frame.
    * @param raw_imu Raw IMU measurement.
+   * @param imu_index Identifies the IMU that produced raw_imu. Pass the same value for every sample of one IMU, because
+   * its angular acceleration is taken from that IMU's previous sample.
    */
-  void add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuControl& raw_imu);
+  void add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base,
+                           const ImuControl& raw_imu,
+                           const std::size_t imu_index = 0);
 
   /**
    * Register a payload: one scan per lidar (one, or several phase-locked ones), as one pose at the payload's last
@@ -161,10 +167,13 @@ private:
 
   ScanFragmentCheck fragment_check_;
 
-  /** Timestamp of the most recent real IMU measurement. */
-  Nsec last_real_imu_time_{0};
+  /** The previous sample of one IMU, kept to difference its angular velocity into angular acceleration. */
+  struct ImuHistory {
+    Nsec last_real_imu_time;
+    Eigen::Vector3s last_real_base_imu_ang_vel;
+  };
 
-  /** Angular velocity of last true IMU measurement expressed in base frame. */
-  Eigen::Vector3s last_real_base_imu_ang_vel_ = Eigen::Vector3s::Zero();
+  /** Keyed by the imu_index passed to add_imu_measurement. An entry is added with that IMU's first sample. */
+  std::map<std::size_t, ImuHistory> imu_history_;
 };
 } // namespace rko_lio::core

@@ -293,8 +293,6 @@ void LIO::add_imu_measurement(const ImuControl& base_imu) {
       spdlog::warn("Skipping IMU, waiting for first LiDAR message.");
       warning_skip_till_first_lidar = true;
     }
-    last_real_imu_time_ = base_imu.time;
-    last_real_base_imu_ang_vel_ = base_imu.angular_velocity;
     return;
   }
 
@@ -320,22 +318,26 @@ void LIO::add_imu_measurement(const ImuControl& base_imu) {
   imu = {.rotation = imu.rotation * Sophus::SO3s::exp(unbiased_ang_vel * dt), .time = base_imu.time};
 
   interval_stats.update(unbiased_ang_vel, unbiased_accel, compensated_accel);
-
-  last_real_imu_time_ = base_imu.time;
-  last_real_base_imu_ang_vel_ = base_imu.angular_velocity;
 }
 
-void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuControl& raw_imu) {
+void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base,
+                              const ImuControl& raw_imu,
+                              const std::size_t imu_index) {
   if (extrinsic_imu2base.log().norm() < NEGLIGIBLE_EXTRINSIC) {
     add_imu_measurement(raw_imu);
     return;
   }
 
-  if (last_real_imu_time_ < EPSILON_TIME) {
+  const auto [entry, first_sample] = imu_history_.try_emplace(
+      imu_index, ImuHistory{
+                     .last_real_imu_time = raw_imu.time,
+                     .last_real_base_imu_ang_vel = extrinsic_imu2base.so3() * raw_imu.angular_velocity,
+                 });
+  if (first_sample) {
     // skip IMU message as we need a previous imu time for extrinsic compensation
-    last_real_imu_time_ = raw_imu.time;
     return;
   }
+  ImuHistory& history = entry->second;
 
   // accounting for the transport-rate
   ImuControl base_imu = raw_imu;
@@ -343,7 +345,7 @@ void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuC
   base_imu.angular_velocity = extrinsic_rotation * raw_imu.angular_velocity;
 
   const Eigen::Vector3s& lever_arm = -1 * extrinsic_imu2base.translation();
-  const Nsec dt = raw_imu.time - last_real_imu_time_;
+  const Nsec dt = raw_imu.time - history.last_real_imu_time;
 
   const Eigen::Vector3s angular_acceleration = std::invoke([&]() -> Eigen::Vector3s {
     if (std::chrono::abs(dt) < std::chrono::microseconds(200)) {
@@ -358,7 +360,7 @@ void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuC
       return Eigen::Vector3s::Zero();
     } else {
       const Eigen::Vector3s angular_acceleration =
-          (base_imu.angular_velocity - last_real_base_imu_ang_vel_) / to_seconds(dt);
+          (base_imu.angular_velocity - history.last_real_base_imu_ang_vel) / to_seconds(dt);
       return angular_acceleration;
     }
   });
@@ -366,6 +368,7 @@ void LIO::add_imu_measurement(const Sophus::SE3s& extrinsic_imu2base, const ImuC
   base_imu.acceleration = extrinsic_rotation * raw_imu.acceleration + angular_acceleration.cross(lever_arm) +
                           base_imu.angular_velocity.cross(base_imu.angular_velocity.cross(lever_arm));
 
+  history = {.last_real_imu_time = base_imu.time, .last_real_base_imu_ang_vel = base_imu.angular_velocity};
   this->add_imu_measurement(base_imu);
 }
 

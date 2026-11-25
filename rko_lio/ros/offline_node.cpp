@@ -26,8 +26,12 @@
 #include "rko_lio/ros/utils/point_cloud_read.hpp"
 #include "rko_lio/ros/utils/rosbag.hpp"
 #include <UTL/profiler.hpp>
+#include <algorithm>
+#include <cstddef>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <string>
+#include <vector>
 // other
 #include <std_msgs/msg/float32_multi_array.hpp>
 
@@ -45,11 +49,21 @@ public:
   float processed_bag_msgs = 0;
   const std::chrono::steady_clock::time_point bag_start_time;
 
+  // called while the bag member is being constructed, so it may only read BaseNode members
+  std::vector<std::string> bag_topics() const {
+    std::vector<std::string> topics;
+    for (const ImuInput& in : imu_inputs) {
+      topics.push_back(in.topic);
+    }
+    topics.push_back(lidar_topic);
+    return topics;
+  }
+
   explicit OfflineNode(const rclcpp::NodeOptions& options)
-      : BaseNode("rko_lio_offline_node", options),
+      : BaseNode("rko_lio_offline_node", options, /*wait_for_every_imu=*/true),
         bag(std::make_unique<utils::BufferableBag>(
             node->declare_parameter<std::string>("bag_path"),
-            std::vector<std::string>{imu_topic, lidar_topic},
+            bag_topics(),
             tf_buffer,
             tf2::durationFromSec(node->declare_parameter<double>("skip_first_seconds", 0.0)))),
         total_bag_msgs(static_cast<float>(bag->message_count())),
@@ -104,9 +118,11 @@ public:
       const auto& topic_name = serialized_bag_msg.topic_name;
 
       // check the topic and call the appropriate callback
-      if (topic_name == imu_topic) {
+      const auto imu = std::ranges::find(imu_inputs, topic_name, &ImuInput::topic);
+      if (imu != imu_inputs.end()) {
         imu_callback(
-            utils::deserialize<sensor_msgs::msg::Imu>(rclcpp::SerializedMessage(*serialized_bag_msg.serialized_data)));
+            utils::deserialize<sensor_msgs::msg::Imu>(rclcpp::SerializedMessage(*serialized_bag_msg.serialized_data)),
+            static_cast<std::size_t>(imu - imu_inputs.begin()));
       } else if (topic_name == lidar_topic) {
         if (const auto lidar_msg =
                 deserialize_lidar(std::make_shared<rclcpp::SerializedMessage>(*serialized_bag_msg.serialized_data))) {
