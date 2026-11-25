@@ -54,8 +54,6 @@ public:
     /** Size of voxel grid (m). */
     Scalar voxel_size = 1.0;
 
-    /** Max points per voxel. */
-
     /** Maximum lidar range (m). */
     Scalar max_range = 100.0;
 
@@ -93,11 +91,16 @@ public:
   /** Current LiDAR state estimate. */
   State lidar_state;
 
-  /** Base-frame state propagated from IMU measurements. Runs ahead of `lidar_state` between payloads; reset to the
-   *  optimized lidar pose after each successful registration. Used for gravity compensation and for publishing
-   *  IMU-rate odometry from the ROS wrapper.
+  struct ImuOrientation {
+    Sophus::SO3s rotation;
+    /** Time of the last IMU measurement propagated into `rotation`. */
+    Nsec time{0};
+  };
+
+  /** Base-frame orientation propagated from IMU measurements, for gravity compensation. Runs ahead of `lidar_state`
+   *  between payloads; reset to the optimized lidar orientation after each successful registration.
    */
-  State imu_state;
+  ImuOrientation imu;
 
   /** IMU bias estimates when initialization is enabled. */
   ImuBias imu_bias;

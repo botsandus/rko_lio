@@ -62,20 +62,49 @@ Timestamps instant_timestamps(size_t n, double t) {
       .min = ns_from_seconds(t), .max = ns_from_seconds(t), .per_point = TimestampVector(n, ns_from_seconds(t))};
 }
 
+std::vector<ImuControl> imu_samples(const double t_start,
+                                    const double t_end,
+                                    const int n,
+                                    const Eigen::Vector3s& acceleration,
+                                    const Eigen::Vector3s& angular_velocity) {
+  std::vector<ImuControl> samples;
+  for (int i = 0; i < n; ++i) {
+    const double frac = n == 1 ? 0.0 : static_cast<double>(i) / static_cast<double>(n - 1);
+    samples.push_back({
+        .time = ns_from_seconds(t_start + ((t_end - t_start) * frac)),
+        .acceleration = acceleration,
+        .angular_velocity = angular_velocity,
+    });
+  }
+  return samples;
+}
+
 void feed_imu(LIO& lio,
               double t_start,
               double t_end,
               int n,
               const Eigen::Vector3s& acceleration,
               const Eigen::Vector3s& angular_velocity) {
-  for (int i = 0; i < n; ++i) {
-    ImuControl m;
-    const double frac = n == 1 ? 0.0 : static_cast<double>(i) / static_cast<double>(n - 1);
-    m.time = ns_from_seconds(t_start + (t_end - t_start) * frac);
-    m.acceleration = acceleration;
-    m.angular_velocity = angular_velocity;
+  for (const ImuControl& m : imu_samples(t_start, t_end, n, acceleration, angular_velocity)) {
     lio.add_imu_measurement(m);
   }
+}
+
+// the base pose that IMU samples imply, by constant-acceleration steps with gravity compensated in the current
+// orientation and no bias: the ground truth a payload's motion prior has to find
+struct ImuTruth {
+  Sophus::SE3s pose;
+  Eigen::Vector3s velocity = Eigen::Vector3s::Zero();
+  Nsec time{0};
+};
+
+ImuTruth propagate(const ImuTruth& truth, const ImuControl& m) {
+  const auto dt = to_seconds<Scalar>(m.time - truth.time);
+  const Eigen::Vector3s accel = m.acceleration + (truth.pose.so3().inverse() * rko_lio::core::gravity());
+  Eigen::Vector6s tau;
+  tau.head<3>() = (truth.velocity * dt) + (accel * dt * dt / 2);
+  tau.tail<3>() = m.angular_velocity * dt;
+  return {.pose = truth.pose * Sophus::SE3s::exp(tau), .velocity = truth.velocity + (accel * dt), .time = m.time};
 }
 
 void feed_static_imu(LIO& lio, double t_start, double t_end, int n) {
@@ -244,10 +273,19 @@ TEST_CASE("Gap in the lidar stream: prior extrapolates instead of throwing", "[r
   // a gap longer than the one second tolerance, with the imu still streaming. yawing about the gravity axis keeps the
   // gravity compensation exact, so the body acceleration in x turns into a real translation as well as a rotation
   constexpr double SECOND_SCAN_START = FIRST_SCAN_END + 1.5;
-  feed_imu(lio, FIRST_SCAN_END, SECOND_SCAN_START, 150, {2.0, 0.0, GRAVITY_MAG}, {0.0, 0.0, 0.4});
+  ImuTruth truth{
+      .pose = lio.lidar_state.pose,
+      .velocity = lio.lidar_state.linear_velocity,
+      .time = lio.lidar_state.time,
+  };
+  for (const ImuControl& m :
+       imu_samples(FIRST_SCAN_END, SECOND_SCAN_START, 150, {2.0, 0.0, GRAVITY_MAG}, {0.0, 0.0, 0.4})) {
+    lio.add_imu_measurement(m);
+    truth = propagate(truth, m);
+  }
 
   // the imu integration is where that motion actually ended up, so put the cloud there and let the prior find it
-  const Sophus::SE3s ground_truth = lio.imu_state.pose;
+  const Sophus::SE3s ground_truth = truth.pose;
   REQUIRE(ground_truth.translation().norm() > 1.0);
   REQUIRE(ground_truth.so3().log().norm() > 0.1);
 
@@ -274,9 +312,17 @@ TEST_CASE("Gap in the lidar stream: second payload has real per-point spread, no
   const Eigen::Vector3s a_body(2.0, 0.0, 0.0);
   const Eigen::Vector3s omega(0.0, 0.0, 0.4);
   const Eigen::Vector3s imu_accel = a_body + Eigen::Vector3s{0.0, 0.0, GRAVITY_MAG};
-  feed_imu(lio, FIRST_SCAN_END, SECOND_SCAN_START, 150, imu_accel, omega);
+  ImuTruth truth{
+      .pose = lio.lidar_state.pose,
+      .velocity = lio.lidar_state.linear_velocity,
+      .time = lio.lidar_state.time,
+  };
+  for (const ImuControl& m : imu_samples(FIRST_SCAN_END, SECOND_SCAN_START, 150, imu_accel, omega)) {
+    lio.add_imu_measurement(m);
+    truth = propagate(truth, m);
+  }
 
-  // one imu sample per point, at that point's own timestamp; imu_state right after is a true
+  // one imu sample per point, at that point's own timestamp; the truth right after is a true
   // per-sample-integrated pose for that point, independent of deskew's own (coarser) model
   const Timestamps ts2 = linspace_timestamps(cloud.size(), SECOND_SCAN_START, SECOND_SCAN_SPAN_END);
   Vector3sVector cloud2(cloud.size());
@@ -286,9 +332,10 @@ TEST_CASE("Gap in the lidar stream: second payload has real per-point spread, no
     m.acceleration = imu_accel;
     m.angular_velocity = omega;
     lio.add_imu_measurement(m);
-    cloud2[i] = lio.imu_state.pose.inverse() * cloud[i];
+    truth = propagate(truth, m);
+    cloud2[i] = truth.pose.inverse() * cloud[i];
   }
-  const Sophus::SE3s ground_truth = lio.imu_state.pose;
+  const Sophus::SE3s ground_truth = truth.pose;
   REQUIRE(ground_truth.translation().norm() > 1.0);
   REQUIRE(ground_truth.so3().log().norm() > 0.1);
 

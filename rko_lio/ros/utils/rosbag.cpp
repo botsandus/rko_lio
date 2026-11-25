@@ -48,19 +48,12 @@ namespace rko_lio::ros::utils {
 BufferableBag::BufferableBag(const std::string& bag_path,
                              const std::vector<std::string>& topics,
                              std::shared_ptr<tf2::BufferCore> tf_buffer,
-                             const tf2::Duration skip_from_start,
-                             const std::chrono::seconds buffer_size,
-                             const bool ingest_dynamic_tf)
-    : tf_buffer_(std::move(tf_buffer)),
-      bag_reader_(std::make_unique<rosbag2_cpp::Reader>()),
-      buffer_size_(buffer_size),
-      topics_(topics) {
+                             const tf2::Duration skip_from_start)
+    : tf_buffer_(std::move(tf_buffer)), bag_reader_(std::make_unique<rosbag2_cpp::Reader>()), topics_(topics) {
   load_tf_static(bag_path);
   bag_reader_->open(bag_path);
   std::vector<std::string> filter_topics = topics_;
-  if (ingest_dynamic_tf) {
-    filter_topics.emplace_back("/tf");
-  }
+  filter_topics.emplace_back("/tf");
   bag_reader_->set_filter(rosbag2_storage::StorageFilter{.topics = filter_topics});
   const auto& metadata = bag_reader_->get_metadata();
   const auto bag_start = std::chrono::duration_cast<tf2::Duration>(metadata.starting_time.time_since_epoch());
@@ -96,7 +89,6 @@ void BufferableBag::load_tf_static(const std::string& bag_path) {
 }
 
 bool BufferableBag::finished() const { return !bag_reader_->has_next() && buffer_.empty(); };
-void BufferableBag::close() const { bag_reader_->close(); }
 
 size_t BufferableBag::message_count() const { return message_count_; }
 
@@ -116,7 +108,7 @@ void BufferableBag::BufferMessages() {
     }
     const auto first_stamp = GetTimestampsFromRosbagSerializedMsg(buffer_.front());
     const auto last_stamp = GetTimestampsFromRosbagSerializedMsg(buffer_.back());
-    return (last_stamp - first_stamp) > buffer_size_;
+    return (last_stamp - first_stamp) > buffer_size;
   };
 
   while (!buffer_is_filled() && bag_reader_->has_next()) {

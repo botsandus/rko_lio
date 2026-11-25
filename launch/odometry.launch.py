@@ -123,12 +123,6 @@ configurable_parameters = [
         "type": "float",
         "description": "Seconds between each local map publishing",
     },
-    {
-        "name": "publish_lidar_acceleration",
-        "default": "False",
-        "type": "bool",
-        "description": "Publish the linear acceleration of the `base_frame` expressed in `base_frame` coordinates. Note that this acceleration can be quite noisy, as it is essentially a double time derivative of the pose update from the lidar scan registration (similar to the twist/velocity in the odometry topic). The topic name is rko_lio/lidar_acceleration.",
-    },
     # lio parameters
     {
         "name": "deskew",
@@ -223,24 +217,11 @@ configurable_parameters = [
         "default": "relative",
         "description": "Per-point time relative to the header stamp, or absolute",
     },
-    # threaded node specific parameters
     {
-        "name": "async.max_lidar_buffer_size",
+        "name": "max_lidar_buffer_size",
         "default": "10",
         "type": "int",
-        "description": "[threaded only] Max lidar frames buffered before the oldest frame is dropped.",
-    },
-    # seq-pipeline-specific parameters (online with odom_at_imu_rate:=true)
-    {
-        "name": "seq.odom_at_imu_rate_topic",
-        "default": "rko_lio/odom_at_imu_rate",
-        "description": "[online seq only] Topic for IMU-rate odometry. Used when odom_at_imu_rate:=true.",
-    },
-    {
-        "name": "seq.tf_at_imu_rate",
-        "default": "false",
-        "type": "bool",
-        "description": "[online seq only] Publish base->odom TF at IMU rate instead of LiDAR rate. Used when odom_at_imu_rate:=true.",
+        "description": "Max lidar payloads buffered before the oldest is dropped.",
     },
     # ros params
     {
@@ -248,13 +229,6 @@ configurable_parameters = [
         "name": "mode",
         "default": "online",
         "description": "Launch mode: 'online' (subscribe to live topics) or 'offline' (drain a rosbag at full speed).",
-    },
-    {
-        "launch_only": True,
-        "name": "odom_at_imu_rate",
-        "default": "false",
-        "type": "bool",
-        "description": "When true (and mode:=online), launch the sequential variant which additionally publishes IMU-rate odometry on seq.odom_at_imu_rate_topic. Has no effect when mode:=offline.",
     },
     {
         "launch_only": True,
@@ -373,10 +347,8 @@ def merge_parameters(cli_params: dict, file_params: dict) -> dict:
     return merged
 
 
-def validate_parameters(merged: dict, mode: str, odom_at_imu_rate: bool, autodetect: bool = False) -> None:
-    # mode + flag determines which pipeline runs
+def validate_parameters(merged: dict, mode: str, autodetect: bool = False) -> None:
     is_offline = mode == "offline"
-    is_seq = mode == "online" and odom_at_imu_rate
 
     offline_only = {p["name"] for p in offline_only_parameters}
     missing = []
@@ -402,20 +374,6 @@ def validate_parameters(merged: dict, mode: str, odom_at_imu_rate: bool, autodet
             lines += [f"  - {name}" for name in autodetectable]
         lines.append("Please provide them via cli (param:=value) or a config file.")
         fail(*lines)
-
-    # warn if odom_at_imu_rate=true is paired with offline (no offline seq variant)
-    if is_offline and odom_at_imu_rate:
-        print("[WARN] odom_at_imu_rate:=true has no effect with mode:=offline; running the async offline pipeline.")
-
-    # warn about parameters that won't take effect for the chosen pipeline
-    if not is_seq:
-        leaked_seq = [p for p in merged if p.startswith("seq.")]
-        if leaked_seq:
-            print(f"[WARN] seq.* params ignored (not running seq pipeline): {leaked_seq}")
-    if is_seq:
-        leaked_async = [p for p in merged if p.startswith("async.")]
-        if leaked_async:
-            print(f"[WARN] async.* params ignored (not running async pipeline): {leaked_async}")
 
 
 def prepare_rviz_config(rviz_config_file: Path, parameters: dict) -> Path:
@@ -481,7 +439,6 @@ def launch_setup(context, *args, **kwargs):
     mode = LaunchConfiguration("mode").perform(context).lower()
     if mode not in ("online", "offline"):
         raise RuntimeError(f"Unknown mode '{mode}'. Valid: online | offline.")
-    odom_at_imu_rate = LaunchConfiguration("odom_at_imu_rate").perform(context).lower() == "true"
 
     # Prepare parameters
     cli_params = get_configured_cli_parameters(context)
@@ -489,12 +446,7 @@ def launch_setup(context, *args, **kwargs):
     final_params = merge_parameters(cli_params=cli_params, file_params=params_from_file)
 
     autodetect = LaunchConfiguration("autodetect").perform(context).lower() == "true"
-    validate_parameters(
-        final_params,
-        mode=mode,
-        odom_at_imu_rate=odom_at_imu_rate,
-        autodetect=autodetect,
-    )
+    validate_parameters(final_params, mode=mode, autodetect=autodetect)
 
     if autodetect:
         timeout = float(LaunchConfiguration("autodetect_timeout").perform(context))
@@ -538,14 +490,7 @@ def launch_setup(context, *args, **kwargs):
             final_params,
         )
 
-    if mode == "online":
-        node_executable = "online_imu_rate_node" if odom_at_imu_rate else "online_node"
-    elif mode == "offline":
-        node_executable = "offline_node"
-    else:
-        raise RuntimeError(f"Unknown mode '{mode}'. Valid: online | offline.")
-
-    nodes = [rko_lio_node(final_params, node_executable, LaunchConfiguration("log_level"))]
+    nodes = [rko_lio_node(final_params, f"{mode}_node", LaunchConfiguration("log_level"))]
 
     if rviz_enabled:
         nodes.append(

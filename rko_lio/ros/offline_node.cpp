@@ -22,32 +22,31 @@
  * SOFTWARE.
  */
 
+#include "base_node.hpp"
 #include "rko_lio/ros/utils/point_cloud_read.hpp"
 #include "rko_lio/ros/utils/rosbag.hpp"
-#include "threaded_node.hpp"
 #include <UTL/profiler.hpp>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
 // other
 #include <std_msgs/msg/float32_multi_array.hpp>
 
-namespace {
-using BagProgressPublisher = rclcpp::Publisher<std_msgs::msg::Float32MultiArray>;
-} // namespace
-
 namespace rko_lio::ros {
 namespace {
-class OfflineNode : public ThreadedNode {
+using BagProgressPublisher = rclcpp::Publisher<std_msgs::msg::Float32MultiArray>;
+
+class OfflineNode : public BaseNode {
 public:
-  std::unique_ptr<utils::BufferableBag> bag;
+  const std::unique_ptr<utils::BufferableBag> bag;
 
   BagProgressPublisher::SharedPtr bag_progress_publisher;
 
-  float total_bag_msgs = 0;
+  const float total_bag_msgs;
   float processed_bag_msgs = 0;
-  std::chrono::steady_clock::time_point bag_start_time;
+  const std::chrono::steady_clock::time_point bag_start_time;
 
   explicit OfflineNode(const rclcpp::NodeOptions& options)
-      : ThreadedNode("rko_lio_offline_node", options),
+      : BaseNode("rko_lio_offline_node", options),
         bag(std::make_unique<utils::BufferableBag>(
             node->declare_parameter<std::string>("bag_path"),
             std::vector<std::string>{imu_topic, lidar_topic},
@@ -55,7 +54,10 @@ public:
             tf2::durationFromSec(node->declare_parameter<double>("skip_first_seconds", 0.0)))),
         total_bag_msgs(static_cast<float>(bag->message_count())),
         bag_start_time(std::chrono::steady_clock::now()) {
-    require_single_lidar();
+    if (!lidar_topics.empty()) {
+      throw std::invalid_argument(
+          "lidar_topics (several lidars merged into one payload) is supported by the online node only.");
+    }
     bag_progress_publisher = node->create_publisher<std_msgs::msg::Float32MultiArray>("rko_lio/bag_progress", 10);
   }
 
@@ -81,12 +83,12 @@ public:
     const utils::LidarDeserializer deserialize_lidar(bag->topic_type(lidar_topic));
     while (rclcpp::ok() && !bag->finished()) {
       {
-        size_t buffered_frames = 0;
+        std::size_t buffered_frames = 0;
         bool registration_can_drain = false;
         {
-          const std::scoped_lock<std::mutex> lock(buffer_mutex);
+          const std::scoped_lock lock(buffer_mutex);
           buffered_frames = lidar_buffer.size();
-          registration_can_drain = atomic_can_process.load() || registration_busy.load();
+          registration_can_drain = can_register.load() || registration_busy.load();
         }
         if (2 * buffered_frames >= max_lidar_buffer_size && registration_can_drain) {
           RCLCPP_WARN_STREAM_ONCE(node->get_logger(),
@@ -118,11 +120,8 @@ public:
     while (rclcpp::ok()) {
       {
         // wait for the registration buffer to drain - leftover IMU after the last lidar scan is harmless
-        const std::scoped_lock<std::mutex> lock(buffer_mutex);
-        if (lidar_buffer.empty() && !registration_busy.load()) {
-          break;
-        }
-        if (!atomic_can_process.load() && !registration_busy.load()) {
+        const std::scoped_lock lock(buffer_mutex);
+        if (!can_register.load() && !registration_busy.load()) {
           break;
         }
       }
