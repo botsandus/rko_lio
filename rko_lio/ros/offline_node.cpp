@@ -55,7 +55,11 @@ public:
     for (const ImuInput& in : imu_inputs) {
       topics.push_back(in.topic);
     }
-    topics.push_back(lidar_topic);
+    if (lidar_topics.empty()) {
+      topics.push_back(lidar_topic);
+    } else {
+      topics.insert(topics.end(), lidar_topics.begin(), lidar_topics.end());
+    }
     return topics;
   }
 
@@ -68,10 +72,6 @@ public:
             tf2::durationFromSec(node->declare_parameter<double>("skip_first_seconds", 0.0)))),
         total_bag_msgs(static_cast<float>(bag->message_count())),
         bag_start_time(std::chrono::steady_clock::now()) {
-    if (!lidar_topics.empty()) {
-      throw std::invalid_argument(
-          "lidar_topics (several lidars merged into one payload) is supported by the online node only.");
-    }
     bag_progress_publisher = node->create_publisher<std_msgs::msg::Float32MultiArray>("rko_lio/bag_progress", 10);
   }
 
@@ -94,7 +94,11 @@ public:
   }
 
   void run() {
-    const utils::LidarDeserializer deserialize_lidar(bag->topic_type(lidar_topic));
+    const std::vector<std::string> topics = lidar_topics.empty() ? std::vector{lidar_topic} : lidar_topics;
+    std::vector<utils::LidarDeserializer> deserializers;
+    for (const std::string& topic : topics) {
+      deserializers.emplace_back(bag->topic_type(topic));
+    }
     while (rclcpp::ok() && !bag->finished()) {
       {
         std::size_t buffered_frames = 0;
@@ -123,10 +127,15 @@ public:
         imu_callback(
             utils::deserialize<sensor_msgs::msg::Imu>(rclcpp::SerializedMessage(*serialized_bag_msg.serialized_data)),
             static_cast<std::size_t>(imu - imu_inputs.begin()));
-      } else if (topic_name == lidar_topic) {
-        if (const auto lidar_msg =
-                deserialize_lidar(std::make_shared<rclcpp::SerializedMessage>(*serialized_bag_msg.serialized_data))) {
-          lidar_callback(lidar_msg);
+      } else if (const auto lidar = std::ranges::find(topics, topic_name); lidar != topics.end()) {
+        const auto input = static_cast<std::size_t>(lidar - topics.begin());
+        if (const auto lidar_msg = deserializers[input](
+                std::make_shared<rclcpp::SerializedMessage>(*serialized_bag_msg.serialized_data))) {
+          if (lidar_topics.empty()) {
+            lidar_callback(lidar_msg);
+          } else {
+            multi_lidar_callback(lidar_msg, input);
+          }
         }
       }
 

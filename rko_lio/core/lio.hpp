@@ -131,8 +131,8 @@ public:
                            const std::size_t imu_index = 0);
 
   /**
-   * Register a payload: one scan per lidar (one, or several phase-locked ones), as one pose at the payload's last
-   * point, applying deskewing based on the initial motion guess and clipping points beyond valid range.
+   * Register a payload of at most one scan per lidar, as one pose at the payload's last point, applying deskewing
+   * based on the initial motion guess and clipping points beyond valid range.
    * @param clouds One scan per lidar, each in its lidar's frame.
    * @param timestamps One entry per cloud: its own min/max, and its per-point timestamps if deskewing.
    * @param lidar2base One entry per cloud: the extrinsic from its lidar to the base frame.
