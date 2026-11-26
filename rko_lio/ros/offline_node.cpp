@@ -94,7 +94,6 @@ public:
   }
 
   void run() {
-    // one per lidar topic: lidar_topic, or each entry of lidar_topics
     const std::vector<std::string> topics = lidar_topics.empty() ? std::vector{lidar_topic} : lidar_topics;
     std::vector<utils::LidarDeserializer> deserializers;
     for (const std::string& topic : topics) {

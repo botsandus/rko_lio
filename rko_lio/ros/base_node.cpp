@@ -68,13 +68,16 @@ bool is_stale(const ImuInput& in, const core::Nsec newest_time) {
   return !in.newest_time || *in.newest_time < newest_time - MAX_IMU_LAG;
 }
 
-// Merging assumes phase-locked lidars at 10 Hz: one merge payload's scans end within MAX_PHASE_SPREAD of each other,
-// one LIDAR_PERIOD after the previous payload.
-constexpr core::Nsec MAX_PHASE_SPREAD = 5ms;
 constexpr core::Nsec LIDAR_PERIOD = 100ms;
-constexpr int MAX_CONSECUTIVE_UNSYNCED = 10;
-// a scan more than this many payloads from the anchor is a time step (PTP), not a phase-locked lidar
+// A scan is dropped when its stamp is more than this from a whole number of periods (at least one) after the latest
+// scan of its lidar given a payload index.
+constexpr core::Nsec MAX_STAMP_JITTER = 5ms;
+// how far apart the scans of one payload may be stamped: a period between lidars at any phase, plus their jitter
+constexpr core::Nsec MAX_STAMP_SPREAD = LIDAR_PERIOD + 2 * MAX_STAMP_JITTER;
+// A scan stamped more than this many periods from payload_anchor restarts the merge. A scan stamped more than this many
+// periods from its lidar's previous scan is counted from payload_anchor instead.
 constexpr int MAX_PAYLOAD_JUMP = 10;
+constexpr int MERGE_LOG_PERIOD_MS = 10000;
 } // namespace
 
 BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& options, const bool wait_for_every_imu)
@@ -102,6 +105,9 @@ BaseNode::BaseNode(const std::string& node_name, const rclcpp::NodeOptions& opti
   if (lidar_topic.empty() == lidar_topics.empty()) {
     throw std::invalid_argument(
         "Set exactly one of lidar_topic and lidar_topics (several lidars merged into one payload).");
+  }
+  if (std::set<std::string>(lidar_topics.begin(), lidar_topics.end()).size() != lidar_topics.size()) {
+    throw std::invalid_argument("lidar_topics lists a lidar more than once; list each lidar once.");
   }
   base_frame = node->declare_parameter<std::string>("base_frame"); // required
   odom_frame = node->declare_parameter<std::string>("odom_frame", odom_frame);
@@ -387,38 +393,62 @@ void BaseNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSh
   }
   try {
     LidarPayload payload = lidar_msg_to_payload(lidar_msg, *in.lidar2base);
-    if (payload_anchor && std::chrono::abs(payload.end() - payload_anchor->end) > MAX_PAYLOAD_JUMP * LIDAR_PERIOD) {
-      RCLCPP_WARN_STREAM(node->get_logger(),
-                         "A scan from " << in.topic << " ends " << core::to_seconds(payload.end() - payload_anchor->end)
-                                        << " s from the merge anchor: re-anchoring the merge on it");
-      open_payloads.clear();
-      payload_anchor.reset();
-      last_merged_payload_index.reset();
-    }
-    if (!payload_anchor) {
-      payload_anchor = PayloadAnchor{.end = payload.end(), .index = 0};
-    }
-    const std::int64_t payload_index =
-        payload_anchor->index +
-        std::llround(core::to_seconds(payload.end() - payload_anchor->end) / core::to_seconds(LIDAR_PERIOD));
-    const bool merged = last_merged_payload_index && payload_index <= *last_merged_payload_index;
     const auto drop = [&](const std::string_view reason) {
-      RCLCPP_WARN_STREAM(node->get_logger(), "Dropping a LiDAR scan of " << payload.point_count() << " points from "
-                                                                         << in.topic << ": " << reason);
+      RCLCPP_WARN_STREAM_THROTTLE(node->get_logger(), *node->get_clock(), MERGE_LOG_PERIOD_MS,
+                                  "Dropping a LiDAR scan of " << payload.point_count() << " points from " << in.topic
+                                                              << ": " << reason << " (repeats within "
+                                                              << MERGE_LOG_PERIOD_MS / 1000 << " s are not logged)");
       publish_metrics(payload, std::chrono::steady_clock::now(), PayloadStatus::skipped,
                       {.input_points = payload.point_count()});
     };
+    // a fragment is not a scan: it leaves the merge state alone
     if (in.fragment_check.is_fragment(core::to_seconds<core::Scalar>(payload.end() - payload.start()),
                                       static_cast<core::Scalar>(payload.point_count()))) {
       drop("a fragment");
-      if (!merged) {
-        open_payloads.try_emplace(payload_index, multi_lidar_inputs.size()).first->second[input].dropped = true;
-        merge_ready_payloads();
-      }
       return;
     }
+    const core::Nsec stamp = utils::to_ns(lidar_msg->header.stamp);
+    const auto jumped = [&](const PayloadAnchor& anchor) {
+      return std::chrono::abs(stamp - anchor.stamp) > MAX_PAYLOAD_JUMP * LIDAR_PERIOD;
+    };
+    if (payload_anchor && jumped(*payload_anchor)) {
+      RCLCPP_WARN_STREAM_THROTTLE(
+          node->get_logger(), *node->get_clock(), MERGE_LOG_PERIOD_MS,
+          "A scan from " << in.topic << " is stamped " << core::to_seconds(stamp - payload_anchor->stamp)
+                         << " s from the first scan of the newest merge payload, more than "
+                         << core::to_seconds(MAX_PAYLOAD_JUMP * LIDAR_PERIOD)
+                         << " s: the merge starts over with this scan, dropping its " << open_payloads.size()
+                         << " open payloads (repeats within " << MERGE_LOG_PERIOD_MS / 1000 << " s are not logged)");
+      restart_merge();
+    }
+    if (!payload_anchor) {
+      payload_anchor = PayloadAnchor{.stamp = stamp, .index = 0};
+    }
+    if (in.anchor && jumped(*in.anchor)) {
+      in.anchor.reset();
+    }
+    const auto periods_after = [&](const PayloadAnchor& anchor) {
+      return std::llround(core::to_seconds(stamp - anchor.stamp) / core::to_seconds(LIDAR_PERIOD));
+    };
+    if (in.anchor) {
+      const core::Nsec since = stamp - in.anchor->stamp;
+      const std::int64_t periods = periods_after(*in.anchor);
+      if (periods < 1 || std::chrono::abs(since - periods * LIDAR_PERIOD) > MAX_STAMP_JITTER) {
+        drop(std::format(
+            "stamped {:.3f} ms after its lidar's last placed scan, not within {:.0f} ms of a positive multiple of "
+            "{:.0f} ms",
+            std::chrono::duration<double, std::milli>(since).count(),
+            std::chrono::duration<double, std::milli>(MAX_STAMP_JITTER).count(),
+            std::chrono::duration<double, std::milli>(LIDAR_PERIOD).count()));
+        return;
+      }
+    }
+    const PayloadAnchor& from = in.anchor ? *in.anchor : *payload_anchor;
+    const std::int64_t payload_index = from.index + periods_after(from);
+    const bool merged = last_merged_payload_index && payload_index <= *last_merged_payload_index;
     if (merged) {
       drop("its payload was merged without it");
+      in.anchor = PayloadAnchor{.stamp = stamp, .index = payload_index};
       return;
     }
     std::vector<PayloadSlot>& slots = open_payloads.try_emplace(payload_index, multi_lidar_inputs.size()).first->second;
@@ -426,21 +456,32 @@ void BaseNode::multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSh
       drop("a second one in one payload");
       return;
     }
+    in.anchor = PayloadAnchor{.stamp = stamp, .index = payload_index};
     if (payload_index > payload_anchor->index) {
-      payload_anchor = PayloadAnchor{.end = payload.end(), .index = payload_index};
+      payload_anchor = in.anchor;
     }
     slots[input].payload = std::move(payload);
+    slots[input].stamp = stamp;
     merge_ready_payloads();
   } catch (const core::InputError& ex) {
     RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping scan: " << ex.what());
   }
 }
 
+void BaseNode::restart_merge() {
+  open_payloads.clear();
+  payload_anchor.reset();
+  last_merged_payload_index.reset();
+  for (MultiLidarInput& lidar : multi_lidar_inputs) {
+    lidar.anchor.reset();
+  }
+}
+
 void BaseNode::merge_ready_payloads() {
-  // oldest first: complete (every lidar in or dropped), a newer one complete, or one two payloads newer open
+  // the oldest open payload is merged once it has a scan from every lidar, a newer payload has, or a payload two or
+  // more indices newer is open
   const auto complete = [](const auto& open_payload) {
-    return std::ranges::all_of(open_payload.second,
-                               [](const PayloadSlot& slot) { return slot.payload || slot.dropped; });
+    return std::ranges::all_of(open_payload.second, [](const PayloadSlot& slot) { return slot.payload.has_value(); });
   };
   while (!open_payloads.empty()) {
     const auto oldest = open_payloads.begin();
@@ -454,16 +495,18 @@ void BaseNode::merge_ready_payloads() {
     open_payloads.erase(oldest);
     UTL_PROFILER_SCOPE("rko_lio: merge payload");
     LidarPayload merged;
+    std::vector<core::Nsec> header_stamps;
+    std::string stamps_by_topic;
     std::string missing_topics;
     for (std::size_t input = 0; input < slots.size(); ++input) {
       PayloadSlot& slot = slots[input];
       if (!slot.payload) {
-        if (!slot.dropped) {
-          missing_topics += " " + multi_lidar_inputs[input].topic;
-        }
+        missing_topics += " " + multi_lidar_inputs[input].topic;
         continue;
       }
       LidarPayload& payload = *slot.payload;
+      header_stamps.push_back(slot.stamp);
+      stamps_by_topic += std::format(" {} at {:.3f} s;", multi_lidar_inputs[input].topic, core::to_seconds(slot.stamp));
       merged.timestamps.push_back(std::move(payload.timestamps.front()));
       merged.clouds.push_back(std::move(payload.clouds.front()));
       merged.lidar2base.push_back(payload.lidar2base.front());
@@ -477,29 +520,24 @@ void BaseNode::merge_ready_payloads() {
     }
     // upstream includes the wait for the last lidar
     merged.upstream = utils::to_ns(node->now()) - merged.end();
-    const core::Nsec first_end = std::ranges::min_element(merged.timestamps, {}, &core::Timestamps::max)->max;
-    const core::Nsec last_end = merged.end();
-    if (last_end - first_end > MAX_PHASE_SPREAD) {
-      const double spread_ms = std::chrono::duration<double, std::milli>(last_end - first_end).count();
-      const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_PHASE_SPREAD).count();
-      RCLCPP_ERROR_STREAM(node->get_logger(), "Dropping unsynchronised lidar scans: their ends differ by "
-                                                  << spread_ms << " ms, more than the " << max_spread_ms
-                                                  << " ms of phase-locked lidars");
+    const auto [first_stamp, last_stamp] = std::ranges::minmax(header_stamps);
+    if (last_stamp - first_stamp > MAX_STAMP_SPREAD) {
+      const double spread_ms = std::chrono::duration<double, std::milli>(last_stamp - first_stamp).count();
+      const double max_spread_ms = std::chrono::duration<double, std::milli>(MAX_STAMP_SPREAD).count();
+      RCLCPP_WARN_STREAM(node->get_logger(), "Dropping a merge payload whose scans are stamped "
+                                                 << spread_ms << " ms apart, more than " << max_spread_ms
+                                                 << " ms:" << stamps_by_topic << " the merge starts over, dropping its "
+                                                 << open_payloads.size() << " other open payloads");
       publish_metrics(merged, std::chrono::steady_clock::now(), PayloadStatus::unsynced,
                       {.input_points = merged.point_count()});
-      if (++consecutive_unsynced >= MAX_CONSECUTIVE_UNSYNCED) {
-        RCLCPP_FATAL(
-            node->get_logger(),
-            "%d merge payloads in a row unsynchronised: the lidars are not phase-locked and merging them is invalid. "
-            "Exiting.",
-            consecutive_unsynced);
-        throw std::runtime_error("lidar_topics: the lidars are not phase-locked");
-      }
+      restart_merge();
       continue;
     }
-    consecutive_unsynced = 0;
     if (!missing_topics.empty()) {
-      RCLCPP_WARN_STREAM(node->get_logger(), "Merging without a scan in this payload from" << missing_topics);
+      RCLCPP_WARN_STREAM_THROTTLE(node->get_logger(), *node->get_clock(), MERGE_LOG_PERIOD_MS,
+                                  "Merging without a scan in this payload from" << missing_topics << " (repeats within "
+                                                                                << MERGE_LOG_PERIOD_MS / 1000
+                                                                                << " s are not logged)");
     }
     add_to_lidar_buffer(std::move(merged));
   }

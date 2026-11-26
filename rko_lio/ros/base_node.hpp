@@ -76,11 +76,11 @@ struct LidarPayload {
 // published as a number in rko_lio/metrics
 enum class PayloadStatus : std::uint8_t {
   ok,                 // registered, odometry published
-  skipped,            // a fragment, a payload ending too soon after the previous, or a merge scan late or twice
+  skipped,            // a fragment, a payload ending too soon after the previous, or a lidar scan the merge drops
   buffer_full,        // the oldest buffered payload, dropped at max_lidar_buffer_size
   input_error,        // core::InputError
   registration_error, // core::RegistrationError
-  unsynced,           // merged scans whose ends differ by more than MAX_PHASE_SPREAD
+  unsynced,           // a merged payload whose scans are stamped more than MAX_STAMP_SPREAD apart
 };
 
 // One per IMU topic (imu_topic, or each entry of imu_topics). imu2base is written once, by that IMU's callback, before
@@ -109,18 +109,20 @@ bool imus_cover(const std::span<const ImuInput> inputs,
 class BaseNode {
 public:
   // merge state: touched only by the lidar callbacks, which never run at once (one mutually exclusive callback group)
+  struct PayloadAnchor {
+    core::Nsec stamp{0};    // header stamp of a scan
+    std::int64_t index = 0; // payload index given to the scan, as in the keys of open_payloads
+  };
   struct MultiLidarInput {
     std::string topic;
     std::optional<Sophus::SE3s> lidar2base; // from tf on its first scan: the lidars are rigid
     core::ScanFragmentCheck fragment_check;
+    // the latest scan of this lidar given a payload index
+    std::optional<PayloadAnchor> anchor;
   };
   struct PayloadSlot {
     std::optional<LidarPayload> payload;
-    bool dropped = false; // its lidar's scan for this payload was a fragment
-  };
-  struct PayloadAnchor {
-    core::Nsec end{0};
-    std::int64_t index = 0;
+    core::Nsec stamp{0}; // header stamp of the slot's scan
   };
 
   // from tf on the first message, its header's frame to the base frame
@@ -178,9 +180,9 @@ public:
 
   std::vector<MultiLidarInput> multi_lidar_inputs;
   std::map<std::int64_t, std::vector<PayloadSlot>> open_payloads; // one slot per lidar
+  // the first scan given the highest payload index so far
   std::optional<PayloadAnchor> payload_anchor;
   std::optional<std::int64_t> last_merged_payload_index;
-  int consecutive_unsynced = 0;
   std::chrono::steady_clock::time_point late_imu_samples_logged; // registration thread only
 
   // last: joined (each stopped by its stop token) before the members they use are destroyed
@@ -216,8 +218,11 @@ public:
   // across IMUs. Samples stamped before fed_until are dropped and counted as late.
   void feed_imu_before(const core::Nsec end);
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
+  // Merges the lidars of lidar_topics, which share one clock and each scan once per 100 ms at any phase. Scans are
+  // paired by header stamp into payloads of at most one scan per lidar. A scan or payload that does not fit is dropped.
   void multi_lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg, const std::size_t input);
   void merge_ready_payloads();
+  void restart_merge();
   void add_to_lidar_buffer(LidarPayload payload);
   void registration_loop(const std::stop_token& stop);
 
